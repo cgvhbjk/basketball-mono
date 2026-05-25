@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import {
   useReactTable,
   getCoreRowModel,
@@ -20,35 +19,16 @@ import { Pagination } from "./pagination";
 interface DataTableProps {
   data: PlayerStatsRow[];
   seasons: number[];
-  initialDivision: string;
 }
 
-export function DataTable({ data, seasons, initialDivision }: DataTableProps) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
+export function DataTable({ data, seasons }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "ppg", desc: true }]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [selectedCircuit, setSelectedCircuit] = useState("");
   const [selectedSeason, setSelectedSeason] = useState("");
+  const [selectedDivision, setSelectedDivision] = useState("");
 
-  // Division is URL-driven: changes trigger a server re-fetch with filtered payload.
-  const selectedDivision = searchParams.get("division") ?? initialDivision;
-
-  const handleDivisionChange = (v: string) => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (v) {
-      params.set("division", v);
-    } else {
-      params.delete("division");
-    }
-    const qs = params.toString();
-    router.push(qs ? `${pathname}?${qs}` : pathname);
-  };
-
-  // Circuit and season filters remain client-side for instant response.
   const filteredData = useMemo(() => {
     let rows = data;
     if (selectedCircuit) {
@@ -57,11 +37,14 @@ export function DataTable({ data, seasons, initialDivision }: DataTableProps) {
     if (selectedSeason) {
       rows = rows.filter((r) => r.season === Number(selectedSeason));
     }
+    if (selectedDivision) {
+      rows = rows.filter((r) => r.age_division === selectedDivision);
+    }
     return rows;
-  }, [data, selectedCircuit, selectedSeason]);
+  }, [data, selectedCircuit, selectedSeason, selectedDivision]);
 
-  // Circuits are derived from the season-filtered subset so the dropdown
-  // only shows circuits that actually have data in the selected season.
+  // Circuits derived from season-filtered rows so the dropdown only shows
+  // circuits that have data in the selected season.
   const availableCircuits = useMemo(() => {
     const seasonRows = selectedSeason
       ? data.filter((r) => r.season === Number(selectedSeason))
@@ -101,7 +84,7 @@ export function DataTable({ data, seasons, initialDivision }: DataTableProps) {
         selectedDivision={selectedDivision}
         onCircuitChange={setSelectedCircuit}
         onSeasonChange={setSelectedSeason}
-        onDivisionChange={handleDivisionChange}
+        onDivisionChange={setSelectedDivision}
       />
 
       <div className="flex-1 overflow-auto border border-gray-300 rounded">

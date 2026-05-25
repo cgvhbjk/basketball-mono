@@ -1,16 +1,11 @@
-import { Suspense } from "react";
 import { DataTable } from "@/components/players-table/data-table";
 import { getPlayersWithStats, getAvailableSeasons } from "@/lib/queries/players";
 
-export default async function HomePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ division?: string }>;
-}) {
-  const { division = "" } = await searchParams;
+export const revalidate = 3600;
 
+export default async function HomePage() {
   const [data, seasons] = await Promise.all([
-    getPlayersWithStats({ season: 2026, ageDivision: division || undefined }),
+    getPlayersWithStats({ season: 2026 }),
     getAvailableSeasons(),
   ]);
 
@@ -22,9 +17,7 @@ export default async function HomePage({
       </header>
 
       <div className="flex-1 min-h-0">
-        <Suspense fallback={null}>
-          <DataTable data={data} seasons={seasons} initialDivision={division} />
-        </Suspense>
+        <DataTable data={data} seasons={seasons} />
       </div>
     </main>
   );
