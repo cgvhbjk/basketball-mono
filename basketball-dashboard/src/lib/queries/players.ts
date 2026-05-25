@@ -68,7 +68,7 @@ export async function getAvailableSeasons(): Promise<number[]> {
     .select("season")
     .order("season", { ascending: false });
 
-  return [...new Set((data ?? []).map((r) => r.season))];
+  return [...new Set(((data ?? []) as { season: number }[]).map((r) => r.season))];
 }
 
 export async function getAvailableCircuits(): Promise<string[]> {
