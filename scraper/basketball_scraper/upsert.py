@@ -68,8 +68,8 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     if player_data.get("grad_year"):
         query = query.eq("grad_year", player_data["grad_year"])
 
-    result = query.maybe_single().execute()
-    data = _data(result)
+    result = query.limit(1).execute()
+    data = (result.data or [None])[0]
     if data:
         pid = data["id"]
         patch = {
