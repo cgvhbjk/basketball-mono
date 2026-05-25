@@ -39,7 +39,7 @@ export function DataTable({ data, seasons, initialDivision }: DataTableProps) {
 
   const handleDivisionChange = (v: string) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (v && v !== "17U") {
+    if (v) {
       params.set("division", v);
     } else {
       params.delete("division");

@@ -7,10 +7,10 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ division?: string }>;
 }) {
-  const { division = "17U" } = await searchParams;
+  const { division = "" } = await searchParams;
 
   const [data, seasons] = await Promise.all([
-    getPlayersWithStats({ season: 2026, ageDivision: division }),
+    getPlayersWithStats({ season: 2026, ageDivision: division || undefined }),
     getAvailableSeasons(),
   ]);
 
