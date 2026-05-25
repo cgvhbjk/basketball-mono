@@ -247,32 +247,46 @@ def _parse_stats_page(
         if not raw_team:
             raw_team = player_cell.get_text(separator=" ", strip=True)
 
-        # Split player name for pattern building — treat hyphens and spaces as equivalent
-        # so "Isaiah Mack-Russell" (from slug: "Isaiah Mack Russell") matches both forms.
-        name_words = re.split(r'[\s-]+', player_name)
+        # Normalize Unicode curly apostrophes/quotes → ASCII before pattern matching.
+        # adidas3ssb.com uses U+2019 (') in names like "Ja'Rye Brown".
+        _QUOTE_NORM = str.maketrans("‘’‚‛′‵", "''''''")
+        rt_norm = raw_team.translate(_QUOTE_NORM)
+
+        # Split player name — treat hyphens, spaces, and apostrophes as equivalent so
+        # slug-derived "Ja Rye Brown" matches "Ja'Rye Brown" and "Isaiah Mack Russell"
+        # matches "Isaiah Mack-Russell".
+        _SEP = r"[\s\-']*"
+        name_words = re.split(r"[\s\-']+", player_name)
         first_initial = name_words[0][0].upper() if name_words else ""
         rest_words = name_words[1:] if len(name_words) > 1 else []
 
-        # Step 1: strip full player name prefix (hyphen/space agnostic)
+        # Step 1: strip full player name prefix (separator agnostic, match on normalized)
         full_pat = re.compile(
-            r'^' + r'[\s\-]*'.join(re.escape(w) for w in name_words) + r'\s*', re.I
+            r'^' + _SEP.join(re.escape(w) for w in name_words) + r'\s*', re.I
         )
-        m = full_pat.match(raw_team)
+        m = full_pat.match(rt_norm)
         if m:
             raw_team = raw_team[m.end():].strip()
+            rt_norm = rt_norm[m.end():].strip()
 
-        # Step 2: strip abbreviated prefix "J. Davis" / "I. Mack-Russell" (hyphen agnostic)
+        # Step 2: strip abbreviated prefix "J. Davis" / "I. Mack-Russell" / "J. Brown".
+        # Try full rest first ("J. Rye Brown"), then last word only ("J. Brown") to handle
+        # multi-syllable first names where the abbreviation drops middle components.
         if rest_words:
-            abbr_pat = re.compile(
-                r'^' + re.escape(first_initial) + r'\.\s+'
-                + r'[\s\-]*'.join(re.escape(w) for w in rest_words)
-                + r'\s*', re.I
-            )
-            m = abbr_pat.match(raw_team)
-            if m:
-                raw_team = raw_team[m.end():].strip()
-            elif re.match(r'^[A-Z]\.\s+', raw_team):
-                # Generic fallback: strip "X. Word[-Word]..." prefix
+            stripped = False
+            for words in (rest_words, [rest_words[-1]]) if len(rest_words) > 1 else (rest_words,):
+                abbr_pat = re.compile(
+                    r'^' + re.escape(first_initial) + r'\.\s+'
+                    + _SEP.join(re.escape(w) for w in words)
+                    + r'\s*', re.I
+                )
+                m = abbr_pat.match(rt_norm)
+                if m:
+                    raw_team = raw_team[m.end():].strip()
+                    stripped = True
+                    break
+            if not stripped and re.match(r'^[A-Z]\.\s+', rt_norm):
+                # Generic fallback: strip "X. Word" prefix
                 raw_team = re.sub(r'^[A-Z]\.\s+\S+\s*', '', raw_team).strip() or raw_team
 
         team_name = raw_team
