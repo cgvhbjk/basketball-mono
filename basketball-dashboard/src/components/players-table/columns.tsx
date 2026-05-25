@@ -56,10 +56,20 @@ export const columns: ColumnDef<PlayerStatsRow>[] = [
   {
     id: "national_rank",
     accessorFn: (row) => row.players?.national_rank,
-    header: ({ column }) => <SortHeader column={column} label="Rank" />,
+    header: ({ column }) => <SortHeader column={column} label="Nat#" />,
     cell: ({ getValue }) => {
       const v = getValue() as number | null;
       return v ? <span className="text-blue-600 font-medium">#{v}</span> : "—";
+    },
+    sortingFn: "basic",
+  },
+  {
+    id: "state_rank",
+    accessorFn: (row) => row.players?.state_rank,
+    header: ({ column }) => <SortHeader column={column} label="St#" />,
+    cell: ({ getValue }) => {
+      const v = getValue() as number | null;
+      return v ? <span className="text-blue-500">#{v}</span> : "—";
     },
     sortingFn: "basic",
   },
@@ -113,6 +123,25 @@ export const columns: ColumnDef<PlayerStatsRow>[] = [
     header: ({ column }) => <SortHeader column={column} label="Ht" />,
     cell: ({ getValue }) => fmtHeight(getValue() as number | null),
     sortingFn: "basic",
+  },
+  {
+    id: "weight",
+    accessorFn: (row) => row.players?.weight_lbs,
+    header: ({ column }) => <SortHeader column={column} label="Wt" />,
+    cell: ({ getValue }) => {
+      const v = getValue() as number | null;
+      return v ? `${v}` : "—";
+    },
+    sortingFn: "basic",
+  },
+  {
+    id: "hometown",
+    accessorFn: (row) => row.players?.hometown ?? "—",
+    header: "Hometown",
+    enableGlobalFilter: true,
+    cell: ({ getValue }) => (
+      <span className="text-gray-600 whitespace-nowrap">{getValue() as string}</span>
+    ),
   },
   {
     id: "high_school",

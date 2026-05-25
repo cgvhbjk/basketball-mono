@@ -3,21 +3,35 @@ On3 player profile enrichment — recruiting rankings and bio data.
 
 Searches on3.com by player name and extracts star_rating, national_rank,
 state_rank, height_inches, grad_year, and high_school.
+
+Preferred usage (one browser shared across all lookups):
+    async with On3Enricher() as enricher:
+        profile = await enricher.lookup("LeBron", "James")
+
+Standalone usage (fresh browser per call — slow):
+    profile = await lookup_player_profile("LeBron", "James")
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, BrowserContext
 
 logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://www.on3.com/search/?q={query}"
-REQUEST_DELAY = 3.5  # seconds between requests
+REQUEST_DELAY = 2.0  # seconds between requests (used by callers)
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -31,68 +45,223 @@ class On3Profile:
     state_rank: Optional[int] = None
 
 
-_HEIGHT_RE = re.compile(r"(\d)[''\-](\d{1,2})")
+_HEIGHT_RE = re.compile(r"([4-8])['''](\d{1,2})")
 _GRAD_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
 _RANK_RE = re.compile(r"#(\d+)")
 _STARS_RE = re.compile(r"\b([1-5])-star\b", re.I)
+_PROFILE_HREF_RE = re.compile(r"/(?:player|db|recruit)/[a-z0-9\-]+/?", re.I)
+
+
+class On3Enricher:
+    """
+    Manages a shared Playwright browser session across many On3 lookups.
+    Must be used as an async context manager so the browser is properly closed.
+    """
+
+    def __init__(self) -> None:
+        self._playwright = None
+        self._browser = None
+        self._context: Optional[BrowserContext] = None
+
+    async def __aenter__(self) -> "On3Enricher":
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        self._context = await self._browser.new_context(
+            user_agent=_USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+        )
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        if self._context:
+            await self._context.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+
+    async def lookup(self, first: str, last: str) -> Optional[On3Profile]:
+        if self._context is None:
+            raise RuntimeError("On3Enricher must be used as an async context manager")
+        query = f"{first}+{last}"
+        url = SEARCH_URL.format(query=query)
+        html = await self._fetch(url)
+        if not html:
+            return None
+        profile = _parse_search_results(html, first, last)
+        if profile is None:
+            logger.info("On3: no match for %s %s", first, last)
+        return profile
+
+    async def _fetch(self, url: str) -> Optional[str]:
+        assert self._context is not None
+        page = await self._context.new_page()
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30_000)
+            await asyncio.sleep(1.5)
+            return await page.content()
+        except Exception as exc:
+            logger.warning("On3 fetch failed %s: %s", url, exc)
+            return None
+        finally:
+            await page.close()
 
 
 async def lookup_player_profile(first: str, last: str) -> Optional[On3Profile]:
-    query = f"{first} {last}".replace(" ", "+")
-    url = SEARCH_URL.format(query=query)
-    html = await _fetch_page(url)
-    if not html:
-        return None
-    return _parse_first_match(html, first, last)
+    """Standalone lookup — creates a fresh browser per call. Use On3Enricher for batches."""
+    async with On3Enricher() as enricher:
+        return await enricher.lookup(first, last)
 
 
-async def _fetch_page(url: str) -> Optional[str]:
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-            )
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await asyncio.sleep(2.0)
-            html = await page.content()
-            await browser.close()
-            return html
-    except Exception as exc:
-        logger.warning("Failed to load On3 page %s: %s", url, exc)
-        return None
-
+# ----------------------------------------------------------------
+# Parsers
+# ----------------------------------------------------------------
 
 def _name_matches(text: str, first: str, last: str) -> bool:
     t = text.lower()
     return first.lower() in t and last.lower() in t
 
 
-def _parse_first_match(html: str, first: str, last: str) -> Optional[On3Profile]:
+def _parse_search_results(html: str, first: str, last: str) -> Optional[On3Profile]:
     soup = BeautifulSoup(html, "html.parser")
 
-    # On3 player links contain /player/ or /db/ in the href
-    for link in soup.find_all("a", href=re.compile(r"/(?:player|db)/", re.I)):
-        link_text = link.get_text(strip=True)
+    # 1. Try Next.js __NEXT_DATA__ — most reliable since it's structured JSON
+    script = soup.find("script", id="__NEXT_DATA__")
+    if script and script.string:
+        try:
+            data = json.loads(script.string)
+            profile = _extract_from_next_data(data, first, last)
+            if profile is not None:
+                return profile
+        except Exception as exc:
+            logger.debug("On3 __NEXT_DATA__ parse failed: %s", exc)
+
+    # 2. Fall back to DOM scraping
+    profile = _parse_dom(soup, first, last)
+    if profile is None:
+        logger.debug("On3 DOM fallback: no match in %d chars of HTML", len(html))
+    return profile
+
+
+def _extract_from_next_data(data: Any, first: str, last: str) -> Optional[On3Profile]:
+    candidates: list[dict] = []
+    _collect_player_dicts(data, candidates, first, last)
+    for obj in candidates:
+        profile = _player_dict_to_profile(obj)
+        if any([profile.height_inches, profile.star_rating, profile.national_rank, profile.grad_year]):
+            return profile
+    return None
+
+
+def _collect_player_dicts(
+    node: Any, out: list[dict], first: str, last: str, depth: int = 0
+) -> None:
+    if depth > 15:
+        return
+    if isinstance(node, dict):
+        name_vals = " ".join(
+            str(node.get(f, ""))
+            for f in ("name", "playerName", "fullName", "firstName", "lastName")
+        )
+        if _name_matches(name_vals, first, last):
+            out.append(node)
+        for v in node.values():
+            _collect_player_dicts(v, out, first, last, depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_player_dicts(item, out, first, last, depth + 1)
+
+
+def _player_dict_to_profile(obj: dict) -> On3Profile:
+    profile = On3Profile()
+
+    for key in ("height", "heightDisplay", "heightInches"):
+        val = obj.get(key)
+        if val is None:
+            continue
+        if isinstance(val, (int, float)) and 48 <= val <= 108:
+            profile.height_inches = int(val)
+            break
+        if isinstance(val, str):
+            m = _HEIGHT_RE.search(val)
+            if m:
+                h = int(m.group(1)) * 12 + int(m.group(2))
+                if 48 <= h <= 108:
+                    profile.height_inches = h
+                    break
+
+    for key in ("classYear", "gradYear", "graduationYear", "year"):
+        val = obj.get(key)
+        if isinstance(val, int) and 2024 <= val <= 2032:
+            profile.grad_year = val
+            break
+        if isinstance(val, str):
+            m = _GRAD_RE.match(val.strip())
+            if m:
+                try:
+                    profile.grad_year = int(val.strip())
+                    break
+                except ValueError:
+                    pass
+
+    for key in ("stars", "starRating", "rating"):
+        val = obj.get(key)
+        if isinstance(val, int) and 1 <= val <= 5:
+            profile.star_rating = val
+            break
+
+    for key in ("nationalRank", "nationalRating", "ranking", "rank"):
+        val = obj.get(key)
+        if isinstance(val, int) and val > 0:
+            profile.national_rank = val
+            break
+
+    for key in ("stateRank", "stateRating"):
+        val = obj.get(key)
+        if isinstance(val, int) and val > 0:
+            profile.state_rank = val
+            break
+
+    for key in ("school", "highSchool", "currentSchool", "schoolName"):
+        val = obj.get(key)
+        if isinstance(val, str) and len(val) > 3:
+            profile.high_school = val
+            break
+        if isinstance(val, dict):
+            name = val.get("name") or val.get("schoolName") or ""
+            if isinstance(name, str) and len(name) > 3:
+                profile.high_school = name
+                break
+
+    for key in ("hometown", "city", "location"):
+        val = obj.get(key)
+        if isinstance(val, str) and len(val) > 2:
+            profile.hometown = val
+            break
+
+    return profile
+
+
+def _parse_dom(soup: BeautifulSoup, first: str, last: str) -> Optional[On3Profile]:
+    for link in soup.find_all("a", href=_PROFILE_HREF_RE):
+        link_text = link.get_text(separator=" ", strip=True)
         if not _name_matches(link_text, first, last):
             continue
 
-        # Walk up to find a card container with profile data
         container = link.parent
-        for _ in range(8):
+        for _ in range(12):
             if container is None:
                 break
             t = container.get_text(" ", strip=True)
-            if re.search(r"\d[''\-]\d", t) or re.search(r"[1-5]-star", t, re.I) or re.search(r"#\d+", t):
+            if (
+                _HEIGHT_RE.search(t)
+                or re.search(r"[1-5]-star", t, re.I)
+                or _RANK_RE.search(t)
+                or _GRAD_RE.search(t)
+            ):
                 break
             container = container.parent
 
@@ -104,7 +273,9 @@ def _parse_first_match(html: str, first: str, last: str) -> Optional[On3Profile]
 
         m = _HEIGHT_RE.search(text)
         if m:
-            profile.height_inches = int(m.group(1)) * 12 + int(m.group(2))
+            h = int(m.group(1)) * 12 + int(m.group(2))
+            if 48 <= h <= 108:
+                profile.height_inches = h
 
         m = _GRAD_RE.search(text)
         if m:
@@ -117,23 +288,20 @@ def _parse_first_match(html: str, first: str, last: str) -> Optional[On3Profile]
         if m:
             profile.star_rating = int(m.group(1))
 
-        # National rank — first #N pattern
         ranks = _RANK_RE.findall(text)
         if ranks:
             profile.national_rank = int(ranks[0])
         if len(ranks) > 1:
             profile.state_rank = int(ranks[1])
 
-        # High school — look for school-related elements
         for tag in container.find_all(["a", "span", "div"]):
             cls = " ".join(tag.get("class") or []).lower()
-            if any(kw in cls for kw in ("school", "institution", "hs-")):
+            if any(kw in cls for kw in ("school", "institution", "hs-", "highschool")):
                 val = tag.get_text(strip=True)
                 if val and len(val) > 3:
                     profile.high_school = val
                     break
 
-        # Hometown — City, ST pattern
         loc = re.search(r"\b([A-Z][a-zA-Z\s]+),\s*([A-Z]{2})\b", text)
         if loc:
             profile.hometown = loc.group(0)
@@ -144,5 +312,4 @@ def _parse_first_match(html: str, first: str, last: str) -> Optional[On3Profile]
 
         return On3Profile()
 
-    logger.info("No On3 result matched for %s %s", first, last)
     return None

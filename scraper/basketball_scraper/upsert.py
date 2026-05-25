@@ -11,8 +11,8 @@ from supabase import Client
 logger = logging.getLogger(__name__)
 
 _BIO_FIELDS = ("height_inches", "position", "high_school", "grad_year", "hometown", "passport_id")
-_RETRIES = 4
-_BACKOFF = 2.0  # seconds; wait doubles each attempt: 2, 4, 8
+_RETRIES = 6
+_BACKOFF = 5.0  # seconds; wait doubles each attempt: 5, 10, 20, 40, 80
 
 
 def _execute(query, retries: int = _RETRIES, backoff: float = _BACKOFF):
@@ -68,32 +68,40 @@ def get_or_create_team(client: Client, team_data: dict[str, Any]) -> str:
     return insert.data[0]["id"]
 
 
+def _player_compatible(row: dict, player_data: dict) -> bool:
+    """True if an existing DB row is compatible with incoming player data (null fields match anything)."""
+    for key in ("high_school", "grad_year"):
+        incoming = player_data.get(key)
+        existing = row.get(key)
+        if incoming and existing and incoming != existing:
+            return False
+    return True
+
+
 def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     """
-    Match on (first_name, last_name, high_school, grad_year).
+    Match on (first_name, last_name) then filter compatible high_school/grad_year in Python.
+    Null fields on either side are treated as wildcards so a player inserted without a grad_year
+    is still found when the scraper later provides one (preventing duplicate rows).
     Returns existing id or inserts a new player.
     On match, only patches bio fields that are currently null in the DB
     so subsequent scraper runs never overwrite canonical values.
     """
-    query = (
+    result = _execute(
         client.table("players")
         .select("id, " + ", ".join(_BIO_FIELDS))
         .eq("first_name", player_data["first_name"])
         .eq("last_name", player_data["last_name"])
+        .limit(10)
     )
-    if player_data.get("high_school"):
-        query = query.eq("high_school", player_data["high_school"])
-    if player_data.get("grad_year"):
-        query = query.eq("grad_year", player_data["grad_year"])
-
-    result = _execute(query.limit(2))
     rows = result.data or []
-    if len(rows) > 1:
+    matches = [r for r in rows if _player_compatible(r, player_data)]
+    if len(matches) > 1:
         logger.warning(
             "Multiple player rows matched (%s %s) — using first. Check for duplicates.",
             player_data["first_name"], player_data["last_name"],
         )
-    data = rows[0] if rows else None
+    data = matches[0] if matches else None
     if data:
         pid = data["id"]
         patch = {

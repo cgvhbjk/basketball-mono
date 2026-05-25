@@ -47,7 +47,7 @@ def clean_bad_players(supabase) -> int:
 
 
 async def run_on3(supabase, limit: int, dry_run: bool) -> None:
-    from basketball_scraper.enrich_on3 import lookup_player_profile, REQUEST_DELAY
+    from basketball_scraper.enrich_on3 import On3Enricher, REQUEST_DELAY
 
     result = (
         supabase.table("players")
@@ -61,43 +61,44 @@ async def run_on3(supabase, limit: int, dry_run: bool) -> None:
     logger.info("Found %d players to enrich via On3", len(players))
 
     updated = skipped = not_found = 0
-    for i, player in enumerate(players, 1):
-        pid = player["id"]
-        first, last = player["first_name"], player["last_name"]
-        logger.info("[%d/%d] Looking up %s %s on On3...", i, len(players), first, last)
+    async with On3Enricher() as enricher:
+        for i, player in enumerate(players, 1):
+            pid = player["id"]
+            first, last = player["first_name"], player["last_name"]
+            logger.info("[%d/%d] Looking up %s %s on On3...", i, len(players), first, last)
 
-        profile = await lookup_player_profile(first, last)
-        if profile is None:
-            not_found += 1
-            logger.info("  → not found")
-        else:
-            patch: dict = {}
-            if profile.height_inches is not None and player["height_inches"] is None:
-                patch["height_inches"] = profile.height_inches
-            if profile.grad_year is not None and player["grad_year"] is None:
-                patch["grad_year"] = profile.grad_year
-            if profile.high_school is not None and player["high_school"] is None:
-                patch["high_school"] = profile.high_school
-            if profile.hometown:
-                patch["hometown"] = profile.hometown
-            if profile.star_rating:
-                patch["star_rating"] = profile.star_rating
-            if profile.national_rank:
-                patch["national_rank"] = profile.national_rank
-            if profile.state_rank:
-                patch["state_rank"] = profile.state_rank
-
-            if patch:
-                logger.info("  → patching: %s", patch)
-                if not dry_run:
-                    supabase.table("players").update(patch).eq("id", pid).execute()
-                updated += 1
+            profile = await enricher.lookup(first, last)
+            if profile is None:
+                not_found += 1
+                logger.info("  → not found")
             else:
-                skipped += 1
-                logger.info("  → no new data found")
+                patch: dict = {}
+                if profile.height_inches is not None and player["height_inches"] is None:
+                    patch["height_inches"] = profile.height_inches
+                if profile.grad_year is not None and player["grad_year"] is None:
+                    patch["grad_year"] = profile.grad_year
+                if profile.high_school is not None and player["high_school"] is None:
+                    patch["high_school"] = profile.high_school
+                if profile.hometown:
+                    patch["hometown"] = profile.hometown
+                if profile.star_rating:
+                    patch["star_rating"] = profile.star_rating
+                if profile.national_rank:
+                    patch["national_rank"] = profile.national_rank
+                if profile.state_rank:
+                    patch["state_rank"] = profile.state_rank
 
-        if i < len(players):
-            await asyncio.sleep(REQUEST_DELAY)
+                if patch:
+                    logger.info("  → patching: %s", patch)
+                    if not dry_run:
+                        supabase.table("players").update(patch).eq("id", pid).execute()
+                    updated += 1
+                else:
+                    skipped += 1
+                    logger.info("  → no new data found")
+
+            if i < len(players):
+                await asyncio.sleep(REQUEST_DELAY)
 
     logger.info(
         "On3 done. Updated: %d | No new data: %d | Not found: %d%s",

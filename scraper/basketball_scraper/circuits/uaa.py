@@ -86,7 +86,7 @@ class UAAScraper(BaseCircuit):
 _STID_RE = re.compile(r"stid=([a-f0-9]{24})")
 _SPID_RE = re.compile(r"spid=([a-f0-9]{24})")
 _JERSEY_RE = re.compile(r"^#(\d+)\s*(.*)")
-_HEIGHT_RE = re.compile(r"(\d)[''\-](\d{1,2})")
+_HEIGHT_RE = re.compile(r"([4-8])['''](\d{1,2})")
 _GRAD_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
 
 
@@ -98,7 +98,9 @@ def _enrich_player_bio(html: str, player: Player) -> None:
     if player.height_inches is None:
         m = _HEIGHT_RE.search(text)
         if m:
-            player.height_inches = int(m.group(1)) * 12 + int(m.group(2))
+            h = int(m.group(1)) * 12 + int(m.group(2))
+            if 48 <= h <= 108:
+                player.height_inches = h
 
     if player.grad_year is None:
         m = _GRAD_RE.search(text)

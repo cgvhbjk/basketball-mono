@@ -18,6 +18,7 @@ export async function getPlayersWithStats(filter: PlayersFilter = {}): Promise<P
         first_name,
         last_name,
         height_inches,
+        weight_lbs,
         grad_year,
         hometown,
         high_school,
@@ -36,7 +37,8 @@ export async function getPlayersWithStats(filter: PlayersFilter = {}): Promise<P
         )
       )
     `)
-    .order("ppg", { ascending: false });
+    .order("ppg", { ascending: false })
+    .limit(10000);
 
   if (filter.season) {
     query = query.eq("season", filter.season);

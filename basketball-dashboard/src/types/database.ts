@@ -146,7 +146,7 @@ export type PlayerSeasonStatsUpdate = Partial<PlayerSeasonStatsInsert>
 // Joined view type used by the dashboard query
 // ----------------------------------------------------------------
 export interface PlayerStatsRow extends PlayerSeasonStats {
-  players: Pick<Player, 'first_name' | 'last_name' | 'height_inches' | 'grad_year' | 'hometown' | 'high_school' | 'position' | 'star_rating' | 'national_rank' | 'state_rank'>
+  players: Pick<Player, 'first_name' | 'last_name' | 'height_inches' | 'weight_lbs' | 'grad_year' | 'hometown' | 'high_school' | 'position' | 'star_rating' | 'national_rank' | 'state_rank'>
   teams: Pick<Team, 'name' | 'city' | 'state'> & {
     circuits: Pick<Circuit, 'name' | 'org'>
   }
