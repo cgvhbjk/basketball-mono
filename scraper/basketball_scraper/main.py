@@ -3,9 +3,15 @@ Entry point: python -m basketball_scraper.main
 
 Reads CIRCUIT, SEASON, AGE_DIVISION from .env, dispatches to the correct
 circuit scraper, then orchestrates teams → rosters → stats → upsert.
+
+A checkpoint file (.checkpoint_<circuit>_<season>_<division>.json) is written
+after each team completes so the run can resume after a crash without
+re-scraping already-processed teams.
 """
 import asyncio
+import json
 import logging
+import os
 from supabase import create_client
 
 from .config import settings
@@ -34,6 +40,25 @@ REGISTRY = {
     "puma":        PUMAScraper,
 }
 
+_CHECKPOINT_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
+def _checkpoint_path(circuit: str, season: int, division: str) -> str:
+    return os.path.join(_CHECKPOINT_DIR, f".checkpoint_{circuit}_{season}_{division}.json")
+
+
+def _load_checkpoint(path: str) -> set[str]:
+    try:
+        with open(path) as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def _save_checkpoint(path: str, done: set[str]) -> None:
+    with open(path, "w") as f:
+        json.dump(list(done), f)
+
 
 async def main() -> None:
     circuit_key = settings.circuit
@@ -42,7 +67,6 @@ async def main() -> None:
 
     supabase = create_client(settings.supabase_url, settings.supabase_service_key)
 
-    # Probe with httpx first; fall back to Playwright if the page is a JS shell
     if settings.use_playwright:
         fetcher = PlaywrightFetcher()
         logger.info("USE_PLAYWRIGHT=true — using Playwright for all requests")
@@ -51,8 +75,12 @@ async def main() -> None:
         logger.info("Trying httpx fetcher first (Playwright fallback enabled)")
 
     circuit_id_db = get_circuit_id(supabase, REGISTRY[circuit_key].circuit_name)
-
     scraper = REGISTRY[circuit_key](fetcher, supabase, settings.season, settings.age_division)
+
+    checkpoint_path = _checkpoint_path(circuit_key, settings.season, settings.age_division)
+    done_team_ids: set[str] = _load_checkpoint(checkpoint_path)
+    if done_team_ids:
+        logger.info("Resuming from checkpoint — %d teams already done", len(done_team_ids))
 
     try:
         # ---- Teams ----
@@ -67,7 +95,6 @@ async def main() -> None:
             scraper.fetcher = fetcher
             teams = await scraper.fetch_teams()
 
-        # Map source_id → db team UUID
         team_id_map: dict[str, str] = {}
         for team in teams:
             team_row = {
@@ -78,15 +105,26 @@ async def main() -> None:
                 "age_division": team.age_division,
                 "season": team.season,
             }
-            db_id = get_or_create_team(supabase, team_row)
-            team_id_map[team.source_id] = db_id
+            team_id_map[team.source_id] = get_or_create_team(supabase, team_row)
 
-        # ---- Rosters + Players ----
+        # ---- Per-team: roster → players → stats → bio-sync ----
         player_id_map: dict[str, str] = {}
-        roster_rows: list[dict] = []
+        total_roster = total_stats = 0
+        store_passport = REGISTRY[circuit_key].circuit_name == "3SSB"
 
-        for team in teams:
+        for i, team in enumerate(teams, 1):
+            if team.source_id in done_team_ids:
+                logger.info("[%d/%d] Skipping %s (checkpoint)", i, len(teams), team.name)
+                continue
+
+            logger.info("[%d/%d] Processing %s", i, len(teams), team.name)
+            db_team_id = team_id_map[team.source_id]
+
+            # Roster + players
             entries = await scraper.fetch_roster(team)
+            roster_rows = []
+            team_players = []  # (Player, db_player_id) — reused for bio-sync after fetch_stats
+
             for player, roster_entry in entries:
                 player_row = {
                     "first_name": player.first_name,
@@ -97,13 +135,12 @@ async def main() -> None:
                     "hometown": player.hometown,
                     "high_school": player.high_school,
                     "position": player.position,
-                    # Store Passport ID for 3SSB players so we can enrich from the-passport.com
-                    "passport_id": player.source_id if REGISTRY[circuit_key].circuit_name == "3SSB" else None,
+                    "passport_id": player.source_id if store_passport else None,
                 }
                 db_player_id = get_or_create_player(supabase, player_row)
                 player_id_map[player.source_id] = db_player_id
+                team_players.append((player, db_player_id))
 
-                db_team_id = team_id_map.get(roster_entry.source_team_id)
                 if db_team_id:
                     roster_rows.append({
                         "team_id": db_team_id,
@@ -113,20 +150,17 @@ async def main() -> None:
                         "position": roster_entry.position,
                     })
 
-        roster_by_key = {
-            (r["team_id"], r["player_id"], r["season"]): r for r in roster_rows
-        }
-        deduped_roster_rows = list(roster_by_key.values())
-        logger.info("Roster rows before dedup: %d, after: %d", len(roster_rows), len(deduped_roster_rows))
-        upsert_rows(supabase, "team_rosters", deduped_roster_rows, "team_id,player_id,season")
+            deduped_roster = list(
+                {(r["team_id"], r["player_id"], r["season"]): r for r in roster_rows}.values()
+            )
+            upsert_rows(supabase, "team_rosters", deduped_roster, "team_id,player_id,season")
+            total_roster += len(deduped_roster)
 
-        # ---- Stats ----
-        stats_rows: list[dict] = []
-        for team in teams:
+            # Stats — fetch_stats may enrich Player objects in-place (e.g. EYBL)
             raw_stats = await scraper.fetch_stats(team)
+            stats_rows = []
             for s in raw_stats:
                 db_player_id = player_id_map.get(s.source_player_id)
-                db_team_id = team_id_map.get(s.source_team_id)
                 if not db_player_id or not db_team_id:
                     continue
                 stats_rows.append({
@@ -144,25 +178,14 @@ async def main() -> None:
                     "three_pt_pct": s.three_pt_pct,
                 })
 
-        stats_by_key = {
-            (r["player_id"], r["team_id"], r["season"]): r for r in stats_rows
-        }
-        deduped_stats_rows = list(stats_by_key.values())
-        logger.info("Stat rows before dedup: %d, after: %d", len(stats_rows), len(deduped_stats_rows))
-        upsert_rows(supabase, "player_season_stats", deduped_stats_rows, "player_id,team_id,season")
+            deduped_stats = list(
+                {(r["player_id"], r["team_id"], r["season"]): r for r in stats_rows}.values()
+            )
+            upsert_rows(supabase, "player_season_stats", deduped_stats, "player_id,team_id,season")
+            total_stats += len(deduped_stats)
 
-        # Bio-sync: flush bio fields enriched during fetch_stats back to the DB.
-        # Some circuits (e.g. EYBL) only have per-player bio on individual stat pages
-        # that are fetched after the roster upsert, so Player objects are mutated
-        # in-place during fetch_stats but the original player_row dicts are already gone.
-        # This pass uses the cached (now-enriched) Player objects + player_id_map to patch
-        # only null DB columns.
-        bio_synced = 0
-        for team in teams:
-            for player, _ in await scraper.fetch_roster(team):
-                db_id = player_id_map.get(player.source_id)
-                if db_id is None:
-                    continue
+            # Bio-sync: flush fields enriched during fetch_stats (uses already-fetched Player objects)
+            for player, db_id in team_players:
                 bio = {
                     k: getattr(player, k)
                     for k in ("height_inches", "position", "grad_year", "high_school", "hometown")
@@ -170,11 +193,17 @@ async def main() -> None:
                 }
                 if bio:
                     patch_player_bio_nulls(supabase, db_id, bio)
-                    bio_synced += 1
-        logger.info("Bio sync: %d players checked", bio_synced)
+
+            done_team_ids.add(team.source_id)
+            _save_checkpoint(checkpoint_path, done_team_ids)
+            logger.info("Checkpoint: %d/%d teams done", len(done_team_ids), len(teams))
 
         logger.info("Done. Teams: %d | Roster entries: %d | Stat rows: %d",
-                    len(teams), len(deduped_roster_rows), len(deduped_stats_rows))
+                    len(teams), total_roster, total_stats)
+
+        # Clear checkpoint on clean completion
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
 
     finally:
         await fetcher.close()
