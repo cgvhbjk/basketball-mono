@@ -12,7 +12,7 @@ from .config import settings
 from .base_fetcher import EmptyPageError
 from .httpx_fetcher import HttpxFetcher
 from .playwright_fetcher import PlaywrightFetcher
-from .upsert import get_circuit_id, get_or_create_team, get_or_create_player, upsert_rows
+from .upsert import get_circuit_id, get_or_create_team, get_or_create_player, upsert_rows, patch_player_bio_nulls
 from .circuits.eybl import EYBLScraper
 from .circuits.eycl import EYCLScraper
 from .circuits.adidas_3ssb import Adidas3SSBScraper
@@ -96,6 +96,9 @@ async def main() -> None:
                     "grad_year": player.grad_year,
                     "hometown": player.hometown,
                     "high_school": player.high_school,
+                    "position": player.position,
+                    # Store Passport ID for 3SSB players so we can enrich from the-passport.com
+                    "passport_id": player.source_id if REGISTRY[circuit_key].circuit_name == "3SSB" else None,
                 }
                 db_player_id = get_or_create_player(supabase, player_row)
                 player_id_map[player.source_id] = db_player_id
@@ -147,6 +150,28 @@ async def main() -> None:
         deduped_stats_rows = list(stats_by_key.values())
         logger.info("Stat rows before dedup: %d, after: %d", len(stats_rows), len(deduped_stats_rows))
         upsert_rows(supabase, "player_season_stats", deduped_stats_rows, "player_id,team_id,season")
+
+        # Bio-sync: flush bio fields enriched during fetch_stats back to the DB.
+        # Some circuits (e.g. EYBL) only have per-player bio on individual stat pages
+        # that are fetched after the roster upsert, so Player objects are mutated
+        # in-place during fetch_stats but the original player_row dicts are already gone.
+        # This pass uses the cached (now-enriched) Player objects + player_id_map to patch
+        # only null DB columns.
+        bio_synced = 0
+        for team in teams:
+            for player, _ in await scraper.fetch_roster(team):
+                db_id = player_id_map.get(player.source_id)
+                if db_id is None:
+                    continue
+                bio = {
+                    k: getattr(player, k)
+                    for k in ("height_inches", "position", "grad_year", "high_school", "hometown")
+                    if getattr(player, k) is not None
+                }
+                if bio:
+                    patch_player_bio_nulls(supabase, db_id, bio)
+                    bio_synced += 1
+        logger.info("Bio sync: %d players checked", bio_synced)
 
         logger.info("Done. Teams: %d | Roster entries: %d | Stat rows: %d",
                     len(teams), len(deduped_roster_rows), len(deduped_stats_rows))

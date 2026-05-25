@@ -58,7 +58,7 @@ async def _fetch_page(url: str) -> Optional[str]:
                 viewport={"width": 1280, "height": 800},
             )
             page = await context.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=30_000)
+            await page.goto(url, wait_until="load", timeout=30_000)
             await asyncio.sleep(1.5)  # extra wait for React hydration
             html = await page.content()
             await browser.close()

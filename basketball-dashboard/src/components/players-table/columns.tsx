@@ -38,6 +38,11 @@ function fmtStat(val: number | null, decimals = 1): string {
   return val.toFixed(decimals);
 }
 
+function fmtStars(rating: number | null): string {
+  if (rating === null || rating === undefined) return "—";
+  return "★".repeat(rating) + "☆".repeat(5 - rating);
+}
+
 export const columns: ColumnDef<PlayerStatsRow>[] = [
   {
     id: "player_name",
@@ -47,6 +52,36 @@ export const columns: ColumnDef<PlayerStatsRow>[] = [
       <span className="font-medium whitespace-nowrap">{getValue() as string}</span>
     ),
     enableGlobalFilter: true,
+  },
+  {
+    id: "national_rank",
+    accessorFn: (row) => row.players?.national_rank,
+    header: ({ column }) => <SortHeader column={column} label="Rank" />,
+    cell: ({ getValue }) => {
+      const v = getValue() as number | null;
+      return v ? <span className="text-blue-600 font-medium">#{v}</span> : "—";
+    },
+    sortingFn: "basic",
+  },
+  {
+    id: "star_rating",
+    accessorFn: (row) => row.players?.star_rating,
+    header: ({ column }) => <SortHeader column={column} label="Stars" />,
+    cell: ({ getValue }) => (
+      <span className="text-yellow-500 tracking-tight text-xs">
+        {fmtStars(getValue() as number | null)}
+      </span>
+    ),
+    sortingFn: "basic",
+    sortDescFirst: true,
+  },
+  {
+    id: "position",
+    accessorFn: (row) => row.players?.position ?? "—",
+    header: "Pos",
+    cell: ({ getValue }) => (
+      <span className="text-gray-500 font-mono text-xs">{getValue() as string}</span>
+    ),
   },
   {
     id: "circuit",
@@ -108,6 +143,18 @@ export const columns: ColumnDef<PlayerStatsRow>[] = [
   {
     accessorKey: "apg",
     header: ({ column }) => <SortHeader column={column} label="APG" />,
+    cell: ({ getValue }) => fmtStat(getValue() as number | null),
+    sortDescFirst: true,
+  },
+  {
+    accessorKey: "spg",
+    header: ({ column }) => <SortHeader column={column} label="SPG" />,
+    cell: ({ getValue }) => fmtStat(getValue() as number | null),
+    sortDescFirst: true,
+  },
+  {
+    accessorKey: "bpg",
+    header: ({ column }) => <SortHeader column={column} label="BPG" />,
     cell: ({ getValue }) => fmtStat(getValue() as number | null),
     sortDescFirst: true,
   },

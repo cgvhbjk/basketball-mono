@@ -2,11 +2,14 @@
 Supabase upsert helpers.
 Uses the service-role key — bypasses RLS for write access.
 """
+from __future__ import annotations
 import logging
 from typing import Any
 from supabase import Client
 
 logger = logging.getLogger(__name__)
+
+_BIO_FIELDS = ("height_inches", "position", "high_school", "grad_year", "hometown", "passport_id")
 
 
 def upsert_rows(client: Client, table: str, rows: list[dict[str, Any]], on_conflict: str) -> None:
@@ -51,10 +54,12 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     """
     Match on (first_name, last_name, high_school, grad_year).
     Returns existing id or inserts a new player.
+    On match, only patches bio fields that are currently null in the DB
+    so subsequent scraper runs never overwrite canonical values.
     """
     query = (
         client.table("players")
-        .select("id")
+        .select("id, " + ", ".join(_BIO_FIELDS))
         .eq("first_name", player_data["first_name"])
         .eq("last_name", player_data["last_name"])
     )
@@ -66,6 +71,29 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     result = query.maybe_single().execute()
     data = _data(result)
     if data:
-        return data["id"]
+        pid = data["id"]
+        patch = {
+            k: player_data[k]
+            for k in _BIO_FIELDS
+            if player_data.get(k) is not None and data.get(k) is None
+        }
+        if patch:
+            client.table("players").update(patch).eq("id", pid).execute()
+        return pid
     insert = client.table("players").insert(player_data).execute()
     return insert.data[0]["id"]
+
+
+def patch_player_bio_nulls(client: Client, player_id: str, bio: dict[str, Any]) -> None:
+    """Patch bio fields for a player by DB UUID, only filling columns that are currently null."""
+    if not bio:
+        return
+    keys = ", ".join(k for k in _BIO_FIELDS if k in bio)
+    if not keys:
+        return
+    current = client.table("players").select(keys).eq("id", player_id).single().execute()
+    if not current.data:
+        return
+    null_patch = {k: v for k, v in bio.items() if current.data.get(k) is None}
+    if null_patch:
+        client.table("players").update(null_patch).eq("id", player_id).execute()

@@ -20,7 +20,11 @@ export async function getPlayersWithStats(filter: PlayersFilter = {}): Promise<P
         height_inches,
         grad_year,
         hometown,
-        high_school
+        high_school,
+        position,
+        star_rating,
+        national_rank,
+        state_rank
       ),
       teams (
         name,

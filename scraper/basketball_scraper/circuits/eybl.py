@@ -11,6 +11,7 @@ URL patterns:
 Season IDs: 544 = current active season (label changes per session).
 To find new season IDs, check the dropdown on the standings page.
 """
+from __future__ import annotations
 import asyncio
 import logging
 import re
@@ -65,7 +66,7 @@ class EYBLScraper(BaseCircuit):
     async def fetch_stats(self, team: Team) -> list[SeasonStats]:
         roster = await self.fetch_roster(team)
         results: list[SeasonStats] = []
-        for _, roster_entry in roster:
+        for player, roster_entry in roster:
             await asyncio.sleep(0.5)
             pid = roster_entry.source_player_id
             url = f"{BASE_URL}/player.html?playerid={pid}&seasonid={SEASON_ID}"
@@ -74,6 +75,8 @@ class EYBLScraper(BaseCircuit):
             except Exception as exc:
                 logger.warning("Skipping player %s stats — fetch failed: %s", pid, exc)
                 continue
+            # Parse bio alongside stats from the same page
+            _enrich_player_bio(html, player)
             stats = _parse_player_stats(html, pid, team.source_id, self.season, self.age_division)
             if stats:
                 results.append(stats)
@@ -83,6 +86,47 @@ class EYBLScraper(BaseCircuit):
 # ----------------------------------------------------------------
 # Parsers
 # ----------------------------------------------------------------
+
+_HEIGHT_RE = re.compile(r"(\d)['’\-](\d{1,2})")
+_GRAD_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
+
+
+def _enrich_player_bio(html: str, player: Player) -> None:
+    """
+    Parse height, position, grad year, and high school from a Pointstreak
+    player detail page and write them directly onto the Player model in-place.
+    Only fills fields that are still None so existing data is not overwritten.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    if player.height_inches is None:
+        m = _HEIGHT_RE.search(text)
+        if m:
+            player.height_inches = int(m.group(1)) * 12 + int(m.group(2))
+
+    if player.grad_year is None:
+        m = _GRAD_RE.search(text)
+        if m:
+            try:
+                player.grad_year = int(m.group(1))
+            except Exception:
+                pass
+
+    # Pointstreak bio rows use <td> labels like "Position" and "School"
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 2:
+            continue
+        label = cells[0].get_text(strip=True).lower()
+        value = cells[1].get_text(strip=True)
+        if not value:
+            continue
+        if player.position is None and "position" in label:
+            player.position = value
+        if player.high_school is None and label in ("school", "high school", "hs"):
+            player.high_school = value
+
 
 def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:
     """

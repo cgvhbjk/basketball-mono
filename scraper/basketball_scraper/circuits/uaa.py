@@ -10,6 +10,7 @@ URL patterns:
 Stats on the team page are SEASON TOTALS; PPG/RPG/APG/SPG/BPG are
 computed by dividing each counting stat by GP.
 """
+from __future__ import annotations
 import asyncio
 import logging
 import re
@@ -61,7 +62,17 @@ class UAAScraper(BaseCircuit):
 
     async def fetch_roster(self, team: Team) -> list[tuple[Player, RosterEntry]]:
         html = await self._get_team_html(team.source_id)
-        return _parse_roster(html, team.source_id)
+        entries = _parse_roster(html, team.source_id)
+        # Enrich each player with bio data from their individual profile page
+        for player, roster_entry in entries:
+            await asyncio.sleep(0.3)
+            url = f"{BASE_URL}/basketball/players?spid={roster_entry.source_player_id}&c={self._cohort()}"
+            try:
+                bio_html = await self.fetcher.fetch_html(url)
+                _enrich_player_bio(bio_html, player)
+            except Exception as exc:
+                logger.debug("Bio fetch failed for %s: %s", roster_entry.source_player_id, exc)
+        return entries
 
     async def fetch_stats(self, team: Team) -> list[SeasonStats]:
         html = await self._get_team_html(team.source_id)
@@ -74,7 +85,60 @@ class UAAScraper(BaseCircuit):
 
 _STID_RE = re.compile(r"stid=([a-f0-9]{24})")
 _SPID_RE = re.compile(r"spid=([a-f0-9]{24})")
-_JERSEY_RE = re.compile(r"^#(\d+)\s+(.*)")
+_JERSEY_RE = re.compile(r"^#(\d+)\s*(.*)")
+_HEIGHT_RE = re.compile(r"(\d)[''\-](\d{1,2})")
+_GRAD_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
+
+
+def _enrich_player_bio(html: str, player: Player) -> None:
+    """Parse height, position, grad year, high school from a UAA player profile page."""
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    if player.height_inches is None:
+        m = _HEIGHT_RE.search(text)
+        if m:
+            player.height_inches = int(m.group(1)) * 12 + int(m.group(2))
+
+    if player.grad_year is None:
+        m = _GRAD_RE.search(text)
+        if m:
+            try:
+                player.grad_year = int(m.group(1))
+            except Exception:
+                pass
+
+    # UA Next bio pages use <dl>/<dt>/<dd> or <th>/<td> pairs.
+    # Only match explicit paired elements to avoid reading unrelated page content.
+    for dt in soup.find_all("dt"):
+        dd = dt.find_next_sibling("dd")
+        if not dd:
+            continue
+        label = dt.get_text(strip=True).lower()
+        value = dd.get_text(strip=True)
+        if not value:
+            continue
+        if player.position is None and label in ("position", "pos"):
+            player.position = value
+        if player.high_school is None and label in ("school", "high school", "hs"):
+            player.high_school = value
+        if player.hometown is None and "hometown" in label:
+            player.hometown = value
+
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["th", "td"])
+        if len(cells) < 2:
+            continue
+        label = cells[0].get_text(strip=True).lower()
+        value = cells[1].get_text(strip=True)
+        if not value:
+            continue
+        if player.position is None and label in ("position", "pos"):
+            player.position = value
+        if player.high_school is None and label in ("school", "high school", "hs"):
+            player.high_school = value
+        if player.hometown is None and "hometown" in label:
+            player.hometown = value
 
 
 def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:

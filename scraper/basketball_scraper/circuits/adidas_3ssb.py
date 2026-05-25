@@ -13,6 +13,7 @@ Season note: adidas3ssb.com uses the spring event calendar year (e.g. 2025 for
 spring-2025 events). Adjust ADIDAS_SEASON_OFFSET if the site's year convention
 doesn't match self.season (EYBL uses the ending calendar year).
 """
+from __future__ import annotations
 import asyncio
 import logging
 import re
@@ -221,7 +222,12 @@ def _parse_stats_page(
             continue
         pid = pid_m.group(1)
 
-        player_name = passport_link.get_text(strip=True)
+        # Use only direct text nodes — nested spans can hold abbreviated names
+        # that get_text() would concatenate (e.g. "Jalen DavisJ. Davis")
+        player_name = "".join(
+            str(c) for c in passport_link.children
+            if not hasattr(c, "children")
+        ).strip() or passport_link.get_text(strip=True)
         # Text after the <a> tag is the team name
         link_next = passport_link.next_sibling
         team_name = link_next.strip() if link_next and isinstance(link_next, str) else ""

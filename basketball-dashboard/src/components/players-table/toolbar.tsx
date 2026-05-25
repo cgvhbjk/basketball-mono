@@ -10,8 +10,10 @@ interface ToolbarProps {
   seasons: number[];
   selectedCircuit: string;
   selectedSeason: string;
+  selectedDivision: string;
   onCircuitChange: (v: string) => void;
   onSeasonChange: (v: string) => void;
+  onDivisionChange: (v: string) => void;
 }
 
 function exportCSV(table: Table<PlayerStatsRow>) {
@@ -65,8 +67,10 @@ export function Toolbar({
   seasons,
   selectedCircuit,
   selectedSeason,
+  selectedDivision,
   onCircuitChange,
   onSeasonChange,
+  onDivisionChange,
 }: ToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 pb-2">
@@ -96,10 +100,8 @@ export function Toolbar({
 
       {/* Age division filter */}
       <select
-        onChange={(e) => {
-          const val = e.target.value;
-          table.getColumn("age_division")?.setFilterValue(val || undefined);
-        }}
+        value={selectedDivision}
+        onChange={(e) => onDivisionChange(e.target.value)}
         className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
       >
         <option value="">All divisions</option>

@@ -42,6 +42,10 @@ class Player(BaseModel):
     grad_year: Optional[int] = None
     hometown: Optional[str] = None
     high_school: Optional[str] = None
+    position: Optional[str] = None
+    star_rating: Optional[int] = None
+    national_rank: Optional[int] = None
+    state_rank: Optional[int] = None
 
     @model_validator(mode="after")
     def normalize_height(self) -> "Player":
