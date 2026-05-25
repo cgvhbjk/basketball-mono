@@ -247,26 +247,33 @@ def _parse_stats_page(
         if not raw_team:
             raw_team = player_cell.get_text(separator=" ", strip=True)
 
-        # Step 1: strip full player name if it appears verbatim at start (some cells do this)
-        if raw_team.upper().startswith(player_name.upper()):
-            raw_team = raw_team[len(player_name):].strip()
+        # Split player name for pattern building — treat hyphens and spaces as equivalent
+        # so "Isaiah Mack-Russell" (from slug: "Isaiah Mack Russell") matches both forms.
+        name_words = re.split(r'[\s-]+', player_name)
+        first_initial = name_words[0][0].upper() if name_words else ""
+        rest_words = name_words[1:] if len(name_words) > 1 else []
 
-        # Step 2: strip abbreviated name prefix "J. Davis" or "J. S Jones" derived from slug
-        name_parts = player_name.split()
-        first_initial = name_parts[0][0].upper() if name_parts else ""
-        last_name = name_parts[-1] if len(name_parts) > 1 else ""
-        rest_of_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
-        for abbr_suffix in filter(None, [rest_of_name, last_name]):
-            pat = re.compile(
-                rf'^{re.escape(first_initial)}\.\s+{re.escape(abbr_suffix)}\s*', re.I
+        # Step 1: strip full player name prefix (hyphen/space agnostic)
+        full_pat = re.compile(
+            r'^' + r'[\s\-]*'.join(re.escape(w) for w in name_words) + r'\s*', re.I
+        )
+        m = full_pat.match(raw_team)
+        if m:
+            raw_team = raw_team[m.end():].strip()
+
+        # Step 2: strip abbreviated prefix "J. Davis" / "I. Mack-Russell" (hyphen agnostic)
+        if rest_words:
+            abbr_pat = re.compile(
+                r'^' + re.escape(first_initial) + r'\.\s+'
+                + r'[\s\-]*'.join(re.escape(w) for w in rest_words)
+                + r'\s*', re.I
             )
-            m = pat.match(raw_team)
+            m = abbr_pat.match(raw_team)
             if m:
                 raw_team = raw_team[m.end():].strip()
-                break
-        else:
-            # Generic fallback: strip "X. Word " prefix
-            raw_team = re.sub(r'^[A-Z]\.\s+\S+\s*', '', raw_team).strip() or raw_team
+            elif re.match(r'^[A-Z]\.\s+', raw_team):
+                # Generic fallback: strip "X. Word[-Word]..." prefix
+                raw_team = re.sub(r'^[A-Z]\.\s+\S+\s*', '', raw_team).strip() or raw_team
 
         team_name = raw_team
 
