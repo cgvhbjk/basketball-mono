@@ -78,5 +78,5 @@ export async function getAvailableCircuits(): Promise<string[]> {
     .select("name")
     .order("name");
 
-  return (data ?? []).map((r) => r.name);
+  return ((data ?? []) as { name: string }[]).map((r) => r.name);
 }
