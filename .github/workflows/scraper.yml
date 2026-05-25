@@ -1,0 +1,56 @@
+name: Basketball Scraper
+
+on:
+  schedule:
+    # Runs every Monday at 6am UTC — adjust to match your tournament calendar
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      circuit:
+        description: "Circuit to scrape"
+        required: true
+        default: "uaa"
+        type: choice
+        options: [eybl, eycl, 3ssb, adidas_gold, uaa, uaa_rise, puma]
+      season:
+        description: "Season year"
+        required: false
+        default: "2026"
+      age_division:
+        description: "Age division"
+        required: false
+        default: "17U"
+        type: choice
+        options: ["17U", "16U", "15U"]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scraper
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CIRCUIT: ${{ inputs.circuit || 'uaa' }}
+          SEASON: ${{ inputs.season || '2026' }}
+          AGE_DIVISION: ${{ inputs.age_division || '17U' }}
+          USE_PLAYWRIGHT: "false"
+        run: python -m basketball_scraper.main
