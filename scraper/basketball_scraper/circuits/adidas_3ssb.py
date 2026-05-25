@@ -222,18 +222,53 @@ def _parse_stats_page(
             continue
         pid = pid_m.group(1)
 
-        # Use only direct text nodes — nested spans can hold abbreviated names
-        # that get_text() would concatenate (e.g. "Jalen DavisJ. Davis")
-        player_name = "".join(
-            str(c) for c in passport_link.children
-            if not hasattr(c, "children")
-        ).strip() or passport_link.get_text(strip=True)
-        # Text after the <a> tag is the team name
-        link_next = passport_link.next_sibling
-        team_name = link_next.strip() if link_next and isinstance(link_next, str) else ""
-        if not team_name:
-            team_name = player_cell.get_text(separator=" ", strip=True)
-            team_name = team_name.replace(player_name, "").strip()
+        # Extract player name from URL slug — immune to nested abbreviated spans
+        # e.g. href=".../players/11511/jalen-davis" → "Jalen Davis"
+        href = passport_link.get("href", "")
+        slug_m = re.search(r"/players/\d+/([a-z0-9\-]+)/?$", href)
+        if slug_m:
+            player_name = slug_m.group(1).replace("-", " ").title()
+        else:
+            player_name = next(
+                (str(c).strip() for c in passport_link.children
+                 if isinstance(c, str) and c.strip()),
+                passport_link.get_text(strip=True),
+            )
+
+        # Team name: text siblings after the <a> tag, then strip leading player abbreviation.
+        # The cell text is typically: "J. Davis Slow Grind Elite" — the abbreviated player
+        # name prefix ("J. Davis") must be removed to get just "Slow Grind Elite".
+        raw_team = " ".join(
+            str(sib).strip()
+            for sib in passport_link.next_siblings
+            if isinstance(sib, str) and str(sib).strip()
+        ).strip()
+
+        if not raw_team:
+            raw_team = player_cell.get_text(separator=" ", strip=True)
+
+        # Step 1: strip full player name if it appears verbatim at start (some cells do this)
+        if raw_team.upper().startswith(player_name.upper()):
+            raw_team = raw_team[len(player_name):].strip()
+
+        # Step 2: strip abbreviated name prefix "J. Davis" or "J. S Jones" derived from slug
+        name_parts = player_name.split()
+        first_initial = name_parts[0][0].upper() if name_parts else ""
+        last_name = name_parts[-1] if len(name_parts) > 1 else ""
+        rest_of_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        for abbr_suffix in filter(None, [rest_of_name, last_name]):
+            pat = re.compile(
+                rf'^{re.escape(first_initial)}\.\s+{re.escape(abbr_suffix)}\s*', re.I
+            )
+            m = pat.match(raw_team)
+            if m:
+                raw_team = raw_team[m.end():].strip()
+                break
+        else:
+            # Generic fallback: strip "X. Word " prefix
+            raw_team = re.sub(r'^[A-Z]\.\s+\S+\s*', '', raw_team).strip() or raw_team
+
+        team_name = raw_team
 
         team_slug = _slug(team_name) if team_name else "unknown"
 

@@ -80,13 +80,38 @@ def _player_compatible(row: dict, player_data: dict) -> bool:
 
 def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     """
-    Match on (first_name, last_name) then filter compatible high_school/grad_year in Python.
-    Null fields on either side are treated as wildcards so a player inserted without a grad_year
-    is still found when the scraper later provides one (preventing duplicate rows).
-    Returns existing id or inserts a new player.
-    On match, only patches bio fields that are currently null in the DB
-    so subsequent scraper runs never overwrite canonical values.
+    Look up player by passport_id (if present) or by (first_name, last_name).
+    Passport_id lookup runs first — it's a stable unique key that survives name corrections.
+    On match, patches any null bio fields and corrects the stored name if it changed.
+    Null name/bio fields on either side are treated as wildcards (no false duplicates).
     """
+    # 1. Passport-id lookup — avoids INSERT collisions when a name was previously stored wrong
+    if player_data.get("passport_id"):
+        result = _execute(
+            client.table("players")
+            .select("id, first_name, last_name, " + ", ".join(_BIO_FIELDS))
+            .eq("passport_id", player_data["passport_id"])
+            .maybe_single()
+        )
+        existing = _data(result)
+        if existing:
+            pid = existing["id"]
+            patch: dict[str, Any] = {}
+            # Correct stale name (e.g. from a previously broken parser)
+            if player_data.get("first_name") and existing.get("first_name") != player_data["first_name"]:
+                patch["first_name"] = player_data["first_name"]
+            if player_data.get("last_name") and existing.get("last_name") != player_data["last_name"]:
+                patch["last_name"] = player_data["last_name"]
+            patch.update({
+                k: player_data[k]
+                for k in _BIO_FIELDS
+                if player_data.get(k) is not None and existing.get(k) is None
+            })
+            if patch:
+                _execute(client.table("players").update(patch).eq("id", pid))
+            return pid
+
+    # 2. Name-based lookup with bio compatibility check
     result = _execute(
         client.table("players")
         .select("id, " + ", ".join(_BIO_FIELDS))
