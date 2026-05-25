@@ -26,8 +26,13 @@ export function DataTable({ data, seasons }: DataTableProps) {
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [selectedCircuit, setSelectedCircuit] = useState("");
-  const [selectedSeason, setSelectedSeason] = useState("");
+  const [selectedSeason, setSelectedSeason] = useState(seasons[0] ? String(seasons[0]) : "");
   const [selectedDivision, setSelectedDivision] = useState("");
+
+  const handleSeasonChange = (v: string) => {
+    setSelectedSeason(v);
+    setSelectedCircuit("");
+  };
 
   const filteredData = useMemo(() => {
     let rows = data;
@@ -83,7 +88,7 @@ export function DataTable({ data, seasons }: DataTableProps) {
         selectedSeason={selectedSeason}
         selectedDivision={selectedDivision}
         onCircuitChange={setSelectedCircuit}
-        onSeasonChange={setSelectedSeason}
+        onSeasonChange={handleSeasonChange}
         onDivisionChange={setSelectedDivision}
       />
 

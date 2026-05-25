@@ -72,11 +72,11 @@ async def run_on3(supabase, limit: int, dry_run: bool) -> None:
             logger.info("  → not found")
         else:
             patch: dict = {}
-            if profile.height_inches and not player["height_inches"]:
+            if profile.height_inches is not None and player["height_inches"] is None:
                 patch["height_inches"] = profile.height_inches
-            if profile.grad_year and not player["grad_year"]:
+            if profile.grad_year is not None and player["grad_year"] is None:
                 patch["grad_year"] = profile.grad_year
-            if profile.high_school and not player["high_school"]:
+            if profile.high_school is not None and player["high_school"] is None:
                 patch["high_school"] = profile.high_school
             if profile.hometown:
                 patch["hometown"] = profile.hometown
@@ -136,11 +136,11 @@ async def run_passport(supabase, limit: int, dry_run: bool) -> None:
             logger.info("  → not found")
         else:
             patch: dict = {}
-            if profile.height_inches and not player["height_inches"]:
+            if profile.height_inches is not None and player["height_inches"] is None:
                 patch["height_inches"] = profile.height_inches
-            if profile.position and not player["position"]:
+            if profile.position is not None and player["position"] is None:
                 patch["position"] = profile.position
-            if profile.high_school and not player["high_school"]:
+            if profile.high_school is not None and player["high_school"] is None:
                 patch["high_school"] = profile.high_school
             if profile.hometown:
                 patch["hometown"] = profile.hometown

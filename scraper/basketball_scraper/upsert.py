@@ -68,8 +68,14 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     if player_data.get("grad_year"):
         query = query.eq("grad_year", player_data["grad_year"])
 
-    result = query.limit(1).execute()
-    data = (result.data or [None])[0]
+    result = query.limit(2).execute()
+    rows = result.data or []
+    if len(rows) > 1:
+        logger.warning(
+            "Multiple player rows matched (%s %s) — using first. Check for duplicates.",
+            player_data["first_name"], player_data["last_name"],
+        )
+    data = rows[0] if rows else None
     if data:
         pid = data["id"]
         patch = {
