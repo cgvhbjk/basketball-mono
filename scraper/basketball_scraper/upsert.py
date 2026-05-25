@@ -4,24 +4,43 @@ Uses the service-role key — bypasses RLS for write access.
 """
 from __future__ import annotations
 import logging
+import time
 from typing import Any
 from supabase import Client
 
 logger = logging.getLogger(__name__)
 
 _BIO_FIELDS = ("height_inches", "position", "high_school", "grad_year", "hometown", "passport_id")
+_RETRIES = 4
+_BACKOFF = 2.0  # seconds; wait doubles each attempt: 2, 4, 8
+
+
+def _execute(query, retries: int = _RETRIES, backoff: float = _BACKOFF):
+    """Call .execute() on a postgrest query builder, retrying on transient network errors."""
+    import httpx
+    for attempt in range(retries):
+        try:
+            return query.execute()
+        except (httpx.RemoteProtocolError, httpx.ConnectError,
+                httpx.NetworkError, httpx.TimeoutException) as exc:
+            if attempt == retries - 1:
+                raise
+            wait = backoff * (2 ** attempt)
+            logger.warning("Supabase request failed (%s), retry %d/%d in %.0fs",
+                           exc, attempt + 1, retries - 1, wait)
+            time.sleep(wait)
 
 
 def upsert_rows(client: Client, table: str, rows: list[dict[str, Any]], on_conflict: str) -> None:
     if not rows:
         return
-    result = client.table(table).upsert(rows, on_conflict=on_conflict).execute()
+    result = _execute(client.table(table).upsert(rows, on_conflict=on_conflict))
     logger.info("Upserted %d rows into %s", len(rows), table)
     return result
 
 
 def get_circuit_id(client: Client, circuit_name: str) -> str:
-    result = client.table("circuits").select("id").eq("name", circuit_name).single().execute()
+    result = _execute(client.table("circuits").select("id").eq("name", circuit_name).single())
     if not result.data:
         raise ValueError(f"Circuit '{circuit_name}' not found in DB. Run 002_seed_circuits.sql first.")
     return result.data["id"]
@@ -34,19 +53,18 @@ def _data(result) -> dict | None:
 
 def get_or_create_team(client: Client, team_data: dict[str, Any]) -> str:
     """Return existing team id or insert and return new id."""
-    result = (
+    result = _execute(
         client.table("teams")
         .select("id")
         .eq("circuit_id", team_data["circuit_id"])
         .eq("name", team_data["name"])
         .eq("season", team_data["season"])
         .maybe_single()
-        .execute()
     )
     data = _data(result)
     if data:
         return data["id"]
-    insert = client.table("teams").insert(team_data).execute()
+    insert = _execute(client.table("teams").insert(team_data))
     return insert.data[0]["id"]
 
 
@@ -68,7 +86,7 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     if player_data.get("grad_year"):
         query = query.eq("grad_year", player_data["grad_year"])
 
-    result = query.limit(2).execute()
+    result = _execute(query.limit(2))
     rows = result.data or []
     if len(rows) > 1:
         logger.warning(
@@ -84,9 +102,9 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
             if player_data.get(k) is not None and data.get(k) is None
         }
         if patch:
-            client.table("players").update(patch).eq("id", pid).execute()
+            _execute(client.table("players").update(patch).eq("id", pid))
         return pid
-    insert = client.table("players").insert(player_data).execute()
+    insert = _execute(client.table("players").insert(player_data))
     return insert.data[0]["id"]
 
 
@@ -97,9 +115,9 @@ def patch_player_bio_nulls(client: Client, player_id: str, bio: dict[str, Any]) 
     keys = ", ".join(k for k in _BIO_FIELDS if k in bio)
     if not keys:
         return
-    current = client.table("players").select(keys).eq("id", player_id).single().execute()
+    current = _execute(client.table("players").select(keys).eq("id", player_id).single())
     if not current.data:
         return
     null_patch = {k: v for k, v in bio.items() if current.data.get(k) is None}
     if null_patch:
-        client.table("players").update(null_patch).eq("id", player_id).execute()
+        _execute(client.table("players").update(null_patch).eq("id", player_id))
