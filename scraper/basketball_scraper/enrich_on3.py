@@ -24,7 +24,7 @@ from playwright.async_api import async_playwright, BrowserContext
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://www.on3.com/search/?q={query}"
+SEARCH_URL = "https://www.on3.com/rivals/search/?searchText={query}"
 REQUEST_DELAY = 2.0  # seconds between requests (used by callers)
 
 _USER_AGENT = (
@@ -100,8 +100,8 @@ class On3Enricher:
         assert self._context is not None
         page = await self._context.new_page()
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30_000)
-            await asyncio.sleep(1.5)
+            await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            await asyncio.sleep(3.0)
             return await page.content()
         except Exception as exc:
             logger.warning("On3 fetch failed %s: %s", url, exc)
@@ -178,6 +178,7 @@ def _collect_player_dicts(
 def _player_dict_to_profile(obj: dict) -> On3Profile:
     profile = On3Profile()
 
+    # On3 /rivals/search/ returns height as an integer in inches at top level.
     for key in ("height", "heightDisplay", "heightInches"):
         val = obj.get(key)
         if val is None:
@@ -207,25 +208,40 @@ def _player_dict_to_profile(obj: dict) -> On3Profile:
                 except ValueError:
                     pass
 
-    for key in ("stars", "starRating", "rating"):
+    # Rankings live inside obj["rating"] as consensusStars / consensusNationalRank /
+    # consensusStateRank in the new /rivals/search/ API.
+    rating_sub = obj.get("rating") if isinstance(obj.get("rating"), dict) else {}
+    for key in ("stars", "starRating"):
         val = obj.get(key)
         if isinstance(val, int) and 1 <= val <= 5:
             profile.star_rating = val
             break
+    if profile.star_rating is None:
+        val = rating_sub.get("consensusStars")
+        if isinstance(val, int) and 1 <= val <= 5:
+            profile.star_rating = val
 
     for key in ("nationalRank", "nationalRating", "ranking", "rank"):
         val = obj.get(key)
         if isinstance(val, int) and val > 0:
             profile.national_rank = val
             break
+    if profile.national_rank is None:
+        val = rating_sub.get("consensusNationalRank")
+        if isinstance(val, int) and val > 0:
+            profile.national_rank = val
 
     for key in ("stateRank", "stateRating"):
         val = obj.get(key)
         if isinstance(val, int) and val > 0:
             profile.state_rank = val
             break
+    if profile.state_rank is None:
+        val = rating_sub.get("consensusStateRank")
+        if isinstance(val, int) and val > 0:
+            profile.state_rank = val
 
-    for key in ("school", "highSchool", "currentSchool", "schoolName"):
+    for key in ("school", "highSchool", "highSchoolName", "currentSchool", "schoolName"):
         val = obj.get(key)
         if isinstance(val, str) and len(val) > 3:
             profile.high_school = val
@@ -236,7 +252,8 @@ def _player_dict_to_profile(obj: dict) -> On3Profile:
                 profile.high_school = name
                 break
 
-    for key in ("hometown", "city", "location"):
+    # On3 /rivals/search/ has "homeTownName": "City, ST" (string) and "hometown" (dict).
+    for key in ("homeTownName", "hometown", "city", "location"):
         val = obj.get(key)
         if isinstance(val, str) and len(val) > 2:
             profile.hometown = val
