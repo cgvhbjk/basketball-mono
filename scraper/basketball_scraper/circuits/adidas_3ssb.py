@@ -222,74 +222,16 @@ def _parse_stats_page(
             continue
         pid = pid_m.group(1)
 
-        # Extract player name from URL slug — immune to nested abbreviated spans
-        # e.g. href=".../players/11511/jalen-davis" → "Jalen Davis"
-        href = passport_link.get("href", "")
-        slug_m = re.search(r"/players/\d+/([a-z0-9\-]+)/?$", href)
-        if slug_m:
-            player_name = slug_m.group(1).replace("-", " ").title()
-        else:
-            player_name = next(
-                (str(c).strip() for c in passport_link.children
-                 if isinstance(c, str) and c.strip()),
-                passport_link.get_text(strip=True),
-            )
+        # The ogp-name-full span has the correct display name (preserves apostrophes,
+        # hyphens, etc.). The ogp-table-sub small tag has the team name directly —
+        # no stripping of player name prefixes required.
+        name_span = passport_link.find("span", class_="ogp-name-full")
+        player_name = name_span.get_text(strip=True) if name_span else (
+            passport_link.find("span") or passport_link
+        ).get_text(strip=True)
 
-        # Team name: text siblings after the <a> tag, then strip leading player abbreviation.
-        # The cell text is typically: "J. Davis Slow Grind Elite" — the abbreviated player
-        # name prefix ("J. Davis") must be removed to get just "Slow Grind Elite".
-        raw_team = " ".join(
-            str(sib).strip()
-            for sib in passport_link.next_siblings
-            if isinstance(sib, str) and str(sib).strip()
-        ).strip()
-
-        if not raw_team:
-            raw_team = player_cell.get_text(separator=" ", strip=True)
-
-        # Normalize Unicode curly apostrophes/quotes → ASCII before pattern matching.
-        # adidas3ssb.com uses U+2019 (') in names like "Ja'Rye Brown".
-        _QUOTE_NORM = str.maketrans("‘’‚‛′‵", "''''''")
-        rt_norm = raw_team.translate(_QUOTE_NORM)
-
-        # Split player name — treat hyphens, spaces, and apostrophes as equivalent so
-        # slug-derived "Ja Rye Brown" matches "Ja'Rye Brown" and "Isaiah Mack Russell"
-        # matches "Isaiah Mack-Russell".
-        _SEP = r"[\s\-']*"
-        name_words = re.split(r"[\s\-']+", player_name)
-        first_initial = name_words[0][0].upper() if name_words else ""
-        rest_words = name_words[1:] if len(name_words) > 1 else []
-
-        # Step 1: strip full player name prefix (separator agnostic, match on normalized)
-        full_pat = re.compile(
-            r'^' + _SEP.join(re.escape(w) for w in name_words) + r'\s*', re.I
-        )
-        m = full_pat.match(rt_norm)
-        if m:
-            raw_team = raw_team[m.end():].strip()
-            rt_norm = rt_norm[m.end():].strip()
-
-        # Step 2: strip abbreviated prefix "J. Davis" / "I. Mack-Russell" / "J. Brown".
-        # Try full rest first ("J. Rye Brown"), then last word only ("J. Brown") to handle
-        # multi-syllable first names where the abbreviation drops middle components.
-        if rest_words:
-            stripped = False
-            for words in (rest_words, [rest_words[-1]]) if len(rest_words) > 1 else (rest_words,):
-                abbr_pat = re.compile(
-                    r'^' + re.escape(first_initial) + r'\.\s+'
-                    + _SEP.join(re.escape(w) for w in words)
-                    + r'\s*', re.I
-                )
-                m = abbr_pat.match(rt_norm)
-                if m:
-                    raw_team = raw_team[m.end():].strip()
-                    stripped = True
-                    break
-            if not stripped and re.match(r'^[A-Z]\.\s+', rt_norm):
-                # Generic fallback: strip "X. Word" prefix
-                raw_team = re.sub(r'^[A-Z]\.\s+\S+\s*', '', raw_team).strip() or raw_team
-
-        team_name = raw_team
+        small_tag = player_cell.find("small", class_="ogp-table-sub")
+        team_name = small_tag.get_text(strip=True) if small_tag else ""
 
         team_slug = _slug(team_name) if team_name else "unknown"
 
