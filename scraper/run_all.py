@@ -19,6 +19,9 @@ import subprocess
 import sys
 import time
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -95,8 +98,25 @@ def main() -> None:
     for circuit, ok in results.items():
         logger.info("  %-15s %s", circuit, "OK" if ok else "FAILED")
 
+    # After both Adidas circuits, remove Gold stats that duplicate 3SSB entries.
+    adidas_both_ran = results.get("3ssb") and results.get("adidas_gold")
+    if adidas_both_ran and not args.dry_run:
+        _dedup_adidas(args.season)
+
     if failed:
         sys.exit(1)
+
+
+def _dedup_adidas(season: int) -> None:
+    from supabase import create_client
+    from basketball_scraper.upsert import dedup_adidas_cross_circuit
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not url or not key:
+        logger.warning("SUPABASE_URL/SUPABASE_SERVICE_KEY not set — skipping Adidas dedup")
+        return
+    client = create_client(url, key)
+    dedup_adidas_cross_circuit(client, season)
 
 
 if __name__ == "__main__":

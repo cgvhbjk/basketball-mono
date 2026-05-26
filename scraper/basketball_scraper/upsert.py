@@ -141,6 +141,62 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     return insert.data[0]["id"]
 
 
+def dedup_adidas_cross_circuit(client: Client, season: int) -> None:
+    """
+    Remove Gold-circuit stats rows for players who already have identical stats
+    under 3SSB for the same season. Adidas shows cumulative season totals in
+    every tier a player competed in, so a player who played Platinum events also
+    appears in the Gold table with the exact same numbers.
+    """
+    # Collect Gold team_ids and 3SSB team_ids for this season
+    gold_teams = _execute(
+        client.table("teams").select("id")
+        .eq("season", season)
+        .in_("circuit_id",
+             [r["id"] for r in (_execute(
+                 client.table("circuits").select("id").eq("name", "Gold")
+             ).data or [])])
+    ).data or []
+    ssb_teams = _execute(
+        client.table("teams").select("id")
+        .eq("season", season)
+        .in_("circuit_id",
+             [r["id"] for r in (_execute(
+                 client.table("circuits").select("id").eq("name", "3SSB")
+             ).data or [])])
+    ).data or []
+
+    if not gold_teams or not ssb_teams:
+        return
+
+    gold_team_ids = {r["id"] for r in gold_teams}
+    ssb_team_ids  = {r["id"] for r in ssb_teams}
+
+    # Find players who have stats in both circuits this season
+    gold_stats = _execute(
+        client.table("player_season_stats").select("id,player_id,team_id")
+        .eq("season", season)
+        .in_("team_id", list(gold_team_ids))
+    ).data or []
+    ssb_player_ids = {
+        r["player_id"] for r in (_execute(
+            client.table("player_season_stats").select("player_id")
+            .eq("season", season)
+            .in_("team_id", list(ssb_team_ids))
+        ).data or [])
+    }
+
+    to_delete = [r["id"] for r in gold_stats if r["player_id"] in ssb_player_ids]
+    if to_delete:
+        _execute(client.table("player_season_stats").delete().in_("id", to_delete))
+        logger.info(
+            "Removed %d Gold stats rows that duplicated 3SSB entries (season %d)",
+            len(to_delete), season,
+        )
+    else:
+        logger.info("No cross-circuit Adidas duplicates found for season %d", season)
+
+
 def patch_player_bio_nulls(client: Client, player_id: str, bio: dict[str, Any]) -> None:
     """Patch bio fields for a player by DB UUID, only filling columns that are currently null."""
     if not bio:

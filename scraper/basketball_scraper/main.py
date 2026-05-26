@@ -110,7 +110,9 @@ async def main() -> None:
         # ---- Per-team: roster → players → stats → bio-sync ----
         player_id_map: dict[str, str] = {}
         total_roster = total_stats = 0
-        store_passport = REGISTRY[circuit_key].circuit_name == "3SSB"
+        # Both Adidas circuits share the-passport.com IDs; store them so
+        # get_or_create_player can merge by passport_id across circuits.
+        store_passport = REGISTRY[circuit_key].circuit_org == "Adidas"
 
         for i, team in enumerate(teams, 1):
             if team.source_id in done_team_ids:
