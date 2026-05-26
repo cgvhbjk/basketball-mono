@@ -8,7 +8,7 @@ export interface PlayersFilter {
 }
 
 export async function getPlayersWithStats(filter: PlayersFilter = {}): Promise<PlayerStatsRow[]> {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   let query = supabase
     .from("player_season_stats")
@@ -64,7 +64,7 @@ export async function getPlayersWithStats(filter: PlayersFilter = {}): Promise<P
 }
 
 export async function getAvailableSeasons(): Promise<number[]> {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data } = await supabase
     .from("player_season_stats")
     .select("season")
@@ -74,7 +74,7 @@ export async function getAvailableSeasons(): Promise<number[]> {
 }
 
 export async function getAvailableCircuits(): Promise<string[]> {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data } = await supabase
     .from("circuits")
     .select("name")
