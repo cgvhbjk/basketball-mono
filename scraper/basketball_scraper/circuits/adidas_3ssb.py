@@ -71,13 +71,15 @@ class Adidas3SSBScraper(BaseCircuit):
                     await page.close()
                     continue
 
-                # Determine total pages from pagination widget
+                # Determine total pages from "Page 1 of N" text in .ogp-page-info.
+                # The pagination widget uses button.ogp-page-next, NOT a data-total-pages attr.
                 total_pages = 1
-                pag = await page.query_selector(".ogp-pagination")
-                if pag:
-                    tp_attr = await pag.get_attribute("data-total-pages")
-                    if tp_attr and tp_attr.isdigit():
-                        total_pages = int(tp_attr)
+                page_info_el = await page.query_selector(".ogp-page-info")
+                if page_info_el:
+                    info_text = await page_info_el.inner_text()
+                    m = re.search(r"of\s+(\d+)", info_text)
+                    if m:
+                        total_pages = int(m.group(1))
                 logger.info("playLevel=%s has %d page(s)", level, total_pages)
 
                 for page_num in range(1, total_pages + 1):
@@ -90,16 +92,16 @@ class Adidas3SSBScraper(BaseCircuit):
                         by_team.setdefault(team_slug, []).append((player, roster_entry, stats))
 
                     if page_num < total_pages:
-                        # Click the Next button and wait for new rows
+                        # Next is a <button class="ogp-page-next">, not an <a> tag.
                         clicked = False
                         for selector in (
-                            ".ogp-pagination a.next:not(.disabled)",
-                            ".ogp-pagination a:has-text('Next')",
+                            "button.ogp-page-next:not([disabled])",
+                            ".ogp-page-next",
                         ):
                             btn = page.locator(selector).first
                             if await btn.count() > 0:
                                 await btn.click()
-                                await asyncio.sleep(1.0)
+                                await asyncio.sleep(2.0)
                                 clicked = True
                                 break
                         if not clicked:
