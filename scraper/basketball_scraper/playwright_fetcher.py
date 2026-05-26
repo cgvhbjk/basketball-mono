@@ -7,9 +7,17 @@ identify hidden JSON endpoints and promote them to HttpxFetcher calls.
 import logging
 from playwright.async_api import async_playwright, Page, Request
 
-from .base_fetcher import BaseFetcher
+from .base_fetcher import BaseFetcher, BlockedError
 
 logger = logging.getLogger(__name__)
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+_INCAPSULA_MARKER = "_Incapsula_Resource"
 
 
 class PlaywrightFetcher(BaseFetcher):
@@ -22,18 +30,32 @@ class PlaywrightFetcher(BaseFetcher):
     async def _ensure_browser(self) -> None:
         if self._browser is None:
             self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True)
+            self._browser = await self._playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
 
     async def fetch_html(self, url: str) -> str:
         await self._ensure_browser()
-        context = await self._browser.new_context()
+        context = await self._browser.new_context(
+            user_agent=_USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+        )
         page: Page = await context.new_page()
 
         page.on("request", self._log_xhr)
 
-        await page.goto(url, wait_until=self._wait_until, timeout=self._timeout_ms)
+        response = await page.goto(url, wait_until=self._wait_until, timeout=self._timeout_ms)
         html = await page.content()
         await context.close()
+
+        # Raise on HTTP errors or Incapsula IP-reputation blocks so callers
+        # see a real error rather than silently receiving a block page.
+        if response and response.status >= 400:
+            raise BlockedError(f"HTTP {response.status} from {url}")
+        if _INCAPSULA_MARKER in html and len(html) < 5000:
+            raise BlockedError(f"Incapsula block page from {url}")
+
         return html
 
     def _log_xhr(self, request: Request) -> None:
