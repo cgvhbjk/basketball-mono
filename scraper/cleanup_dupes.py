@@ -31,10 +31,11 @@ def merge_passport_dupes(client) -> None:
     old parser). Redirect all stats + roster rows to the canonical record, then
     delete the stale one.
     """
-    # All players with a passport_id
+    # All players with a passport_id. `updated_at` is the schema's recency column —
+    # `created_at` doesn't exist on the players table and selecting it returns 400.
     result = _execute(
         client.table("players")
-        .select("id,first_name,last_name,passport_id,created_at")
+        .select("id,first_name,last_name,passport_id,updated_at")
         .not_.is_("passport_id", "null")
         .order("passport_id")
     )
@@ -50,12 +51,12 @@ def merge_passport_dupes(client) -> None:
     for passport_id, group in by_passport.items():
         if len(group) < 2:
             continue
-        # Pick the most recently created record as canonical; fall back to longest
-        # last_name when created_at is unavailable. This prefers the record written
-        # by the new scraper run (correct casing) over the stale old-parser record.
+        # Pick the most recently updated record as canonical. Strip whitespace from
+        # last_name before falling back to length, so a stale row with trailing
+        # spaces can't beat a newer correctly-cased version.
         canonical = max(group, key=lambda r: (
-            len(r.get("last_name") or ""),
-            r.get("created_at") or "",
+            r.get("updated_at") or "",
+            len((r.get("last_name") or "").strip()),
         ))
         stale = [r for r in group if r["id"] != canonical["id"]]
         for s in stale:

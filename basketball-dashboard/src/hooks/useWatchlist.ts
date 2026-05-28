@@ -68,23 +68,29 @@ export function useWatchlist() {
   }, []);
 
   const setNotes = useCallback((playerId: string, notes: string) => {
-    setStored((prev) => ({
-      ...prev,
-      entries: {
-        ...prev.entries,
-        [playerId]: { ...prev.entries[playerId], notes },
-      },
-    }));
+    setStored((prev) => {
+      // If the player was unstarred mid-edit (e.g. starred elsewhere, then the
+      // onBlur fires here), spreading `undefined` would create a partial entry
+      // {notes} without starredAt and re-star the player on the next render —
+      // since the `starred` Set is derived from Object.keys(entries).
+      const existing = prev.entries[playerId];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        entries: { ...prev.entries, [playerId]: { ...existing, notes } },
+      };
+    });
   }, []);
 
   const setStatus = useCallback((playerId: string, status: string | null) => {
-    setStored((prev) => ({
-      ...prev,
-      entries: {
-        ...prev.entries,
-        [playerId]: { ...prev.entries[playerId], status },
-      },
-    }));
+    setStored((prev) => {
+      const existing = prev.entries[playerId];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        entries: { ...prev.entries, [playerId]: { ...existing, status } },
+      };
+    });
   }, []);
 
   const addStatusOption = useCallback((label: string) => {

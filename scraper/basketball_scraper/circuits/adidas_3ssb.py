@@ -245,7 +245,9 @@ def _parse_stats_page(
         last = parts[1] if len(parts) > 1 else ""
 
         gp = safe_int(cell_text(cells, "GP"))
-        if gp is None:
+        # Skip rows with no GP or GP=0 — site's minGames=1 URL filter should already
+        # exclude these, but a 0-games row would skew per-game means downstream.
+        if not gp:
             continue
 
         roster_entry = RosterEntry(
@@ -274,6 +276,11 @@ def _parse_stats_page(
                 three_pt_pct=safe_float(cell_text(cells, "3P%")),
                 tpg=safe_float(cell_text(cells, "TPG")),
                 mpg=safe_float(cell_text(cells, "MPG") or cell_text(cells, "MIN")),
+                # Extended per-game columns used by the dashboard. Headers vary by
+                # plugin version: FGA/FTA/OREB or FGAPG/FTAPG/OREBPG.
+                fga=safe_float(cell_text(cells, "FGA") or cell_text(cells, "FGAPG")),
+                fta=safe_float(cell_text(cells, "FTA") or cell_text(cells, "FTAPG")),
+                oreb=safe_float(cell_text(cells, "OREB") or cell_text(cells, "OREBPG") or cell_text(cells, "ORPG")),
             ),
         ))
 

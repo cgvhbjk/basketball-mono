@@ -55,7 +55,10 @@ class PlaywrightFetcher(BaseFetcher):
         # see a real error rather than silently receiving a block page.
         if response and response.status >= 400:
             raise BlockedError(f"HTTP {response.status} from {url}")
-        if _INCAPSULA_MARKER in html and len(html) < 5000:
+        # The _Incapsula_Resource string only appears in the JS that the block
+        # interstitial loads. Don't gate on page size — newer Imperva templates
+        # ship full-page challenges that comfortably exceed any small threshold.
+        if _INCAPSULA_MARKER in html:
             raise BlockedError(f"Incapsula block page from {url}")
 
         return html

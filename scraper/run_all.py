@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 ALL_CIRCUITS = ["eybl", "eycl", "3ssb", "adidas_gold", "uaa", "uaa_rise", "puma"]
 
 
+_CIRCUIT_TIMEOUT_SECONDS = int(os.getenv("CIRCUIT_TIMEOUT_SECONDS", "3600"))  # 1 hour
+
+
 def run_circuit(circuit: str, season: int, division: str, playwright: bool, dry_run: bool) -> bool:
     env = os.environ.copy()
     env["CIRCUIT"] = circuit
@@ -42,7 +45,19 @@ def run_circuit(circuit: str, season: int, division: str, playwright: bool, dry_
         return True
 
     start = time.monotonic()
-    result = subprocess.run(cmd, env=env, cwd=os.path.dirname(os.path.abspath(__file__)))
+    # Bound each circuit; without a timeout a hung Playwright page or a stuck
+    # network connection would block the whole batch indefinitely with no signal.
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=_CIRCUIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - start
+        logger.error("✗ %-15s TIMED OUT after %.0fs (limit %ds)", circuit, elapsed, _CIRCUIT_TIMEOUT_SECONDS)
+        return False
     elapsed = time.monotonic() - start
 
     if result.returncode == 0:

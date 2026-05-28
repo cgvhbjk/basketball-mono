@@ -3,6 +3,23 @@
 import { ColumnDef, SortingFn } from "@tanstack/react-table";
 import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import type { PlayerStatsRow } from "@/types/database";
+import { useStarred } from "./StarredContext";
+
+function StarCell({ playerId }: { playerId: string }) {
+  const { starred, toggleStar } = useStarred();
+  const isStarred = starred.has(playerId);
+  return (
+    <button
+      onClick={() => toggleStar(playerId)}
+      className={`text-sm leading-none transition-colors ${
+        isStarred ? "text-yellow-400 hover:text-yellow-500" : "text-gray-300 hover:text-yellow-300"
+      }`}
+      title={isStarred ? "Remove from watchlist" : "Add to watchlist"}
+    >
+      {isStarred ? "★" : "☆"}
+    </button>
+  );
+}
 
 function SortHeader({ column, label }: { column: any; label: string }) {
   const sorted = column.getIsSorted();
@@ -45,16 +62,23 @@ function fmtStars(rating: number | null): string {
 
 function p40(val: number | null, mpg: number | null, per40 = false, decimals = 1): string {
   if (val === null || val === undefined) return "—";
-  if (!per40 || !mpg) return fmtStat(val, decimals);
-  return ((val / mpg) * 40).toFixed(decimals);
+  // In per-40 mode without mpg we can't actually compute the rate — showing the
+  // raw value under a "PTS/40" header would mislead. Render an em-dash instead.
+  if (per40 && !mpg) return "—";
+  if (!per40) return fmtStat(val, decimals);
+  return ((val / mpg!) * 40).toFixed(decimals);
 }
 
+// Sort comparator. We rely on each per40-sorted column having `sortUndefined: 'last'`
+// AND an accessor that converts null → undefined, so missing data is pushed to
+// the bottom by TanStack BEFORE this fn runs — and that placement is independent
+// of asc/desc, which a hand-rolled sentinel (e.g. -Infinity) could not achieve.
 function makePer40SortFn(per40: boolean): SortingFn<PlayerStatsRow> {
   return (rowA, rowB, columnId) => {
-    const aRaw = rowA.getValue(columnId) as number | null;
-    const bRaw = rowB.getValue(columnId) as number | null;
-    const toVal = (v: number | null, mpg: number | null | undefined) => {
-      if (v == null) return -Infinity;
+    const aRaw = rowA.getValue(columnId) as number | undefined;
+    const bRaw = rowB.getValue(columnId) as number | undefined;
+    if (aRaw === undefined || bRaw === undefined) return 0; // intercepted upstream
+    const toVal = (v: number, mpg: number | null | undefined): number => {
       if (!per40 || !mpg) return v;
       return (v / mpg) * 40;
     };
@@ -65,31 +89,19 @@ function makePer40SortFn(per40: boolean): SortingFn<PlayerStatsRow> {
   };
 }
 
-export function createColumns(
-  per40: boolean,
-  starred: Set<string> = new Set(),
-  onToggleStar: (id: string) => void = () => {},
-): ColumnDef<PlayerStatsRow>[] {
+// Coerce null → undefined so TanStack's sortUndefined treats them as missing.
+function num(v: number | null | undefined): number | undefined {
+  return v ?? undefined;
+}
+
+export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
   const per40Sort = makePer40SortFn(per40);
   return [
     {
       id: "star",
       header: "",
       accessorFn: (row) => row.player_id,
-      cell: ({ row }) => {
-        const isStarred = starred.has(row.original.player_id);
-        return (
-          <button
-            onClick={() => onToggleStar(row.original.player_id)}
-            className={`text-sm leading-none transition-colors ${
-              isStarred ? "text-yellow-400 hover:text-yellow-500" : "text-gray-300 hover:text-yellow-300"
-            }`}
-            title={isStarred ? "Remove from watchlist" : "Add to watchlist"}
-          >
-            {isStarred ? "★" : "☆"}
-          </button>
-        );
-      },
+      cell: ({ row }) => <StarCell playerId={row.original.player_id} />,
       enableSorting: false,
       enableGlobalFilter: false,
     },
@@ -174,88 +186,112 @@ export function createColumns(
       sortingFn: "basic",
     },
     {
-      accessorKey: "games_played",
+      id: "games_played",
+      accessorFn: (row) => num(row.games_played),
       header: ({ column }) => <SortHeader column={column} label="GP" />,
-      cell: ({ getValue }) => getValue() ?? "—",
+      cell: ({ getValue }) => (getValue() as number | undefined) ?? "—",
+      sortUndefined: "last",
     },
     {
-      accessorKey: "ppg",
+      id: "ppg",
+      accessorFn: (row) => num(row.ppg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "PTS/40" : "PPG"} />,
       cell: ({ row }) => p40(row.original.ppg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "rpg",
+      id: "rpg",
+      accessorFn: (row) => num(row.rpg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "REB/40" : "RPG"} />,
       cell: ({ row }) => p40(row.original.rpg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "apg",
+      id: "apg",
+      accessorFn: (row) => num(row.apg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "AST/40" : "APG"} />,
       cell: ({ row }) => p40(row.original.apg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "spg",
+      id: "spg",
+      accessorFn: (row) => num(row.spg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "STL/40" : "SPG"} />,
       cell: ({ row }) => p40(row.original.spg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "bpg",
+      id: "bpg",
+      accessorFn: (row) => num(row.bpg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "BLK/40" : "BPG"} />,
       cell: ({ row }) => p40(row.original.bpg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "fga",
+      id: "fga",
+      accessorFn: (row) => num(row.fga),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "FGA/40" : "FGA"} />,
       cell: ({ row }) => p40(row.original.fga, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "tpg",
+      id: "tpg",
+      accessorFn: (row) => num(row.tpg),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "TO/40" : "TO"} />,
       cell: ({ row }) => p40(row.original.tpg, row.original.mpg, per40),
       sortDescFirst: false,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "fta",
+      id: "fta",
+      accessorFn: (row) => num(row.fta),
       header: ({ column }) => <SortHeader column={column} label={per40 ? "FTA/40" : "FTA"} />,
       cell: ({ row }) => p40(row.original.fta, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "mpg",
+      id: "mpg",
+      accessorFn: (row) => num(row.mpg),
       header: ({ column }) => <SortHeader column={column} label="MIN" />,
-      cell: ({ getValue }) => fmtStat(getValue() as number | null),
+      cell: ({ getValue }) => fmtStat((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "fg_pct",
+      id: "fg_pct",
+      accessorFn: (row) => num(row.fg_pct),
       header: ({ column }) => <SortHeader column={column} label="FG%" />,
-      cell: ({ getValue }) => fmtPct(getValue() as number | null),
+      cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
+      sortUndefined: "last",
     },
     {
-      accessorKey: "three_pt_pct",
+      id: "three_pt_pct",
+      accessorFn: (row) => num(row.three_pt_pct),
       header: ({ column }) => <SortHeader column={column} label="3P%" />,
-      cell: ({ getValue }) => fmtPct(getValue() as number | null),
+      cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
+      sortUndefined: "last",
     },
     {
       id: "eff",
       accessorFn: (row) => {
-        if (row.ppg === null) return null;
+        if (row.ppg === null) return undefined;
         // No scraper populates `oreb` today, so omit it from the formula rather
         // than silently treating null as zero and pretending oreb is in the mix.
         return (
@@ -269,15 +305,16 @@ export function createColumns(
       },
       header: ({ column }) => <SortHeader column={column} label="EFF" />,
       cell: ({ row, getValue }) => {
-        const v = getValue() as number | null;
-        if (v === null) return "—";
+        const v = getValue() as number | undefined;
+        if (v === undefined) return "—";
         if (!per40) return fmtStat(v);
         const mpg = row.original.mpg;
-        if (!mpg) return fmtStat(v);
+        if (!mpg) return "—";
         return ((v / mpg) * 40).toFixed(1);
       },
       sortDescFirst: true,
       sortingFn: per40Sort,
+      sortUndefined: "last",
     },
   ];
 }

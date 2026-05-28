@@ -33,7 +33,7 @@ function exportCSV(table: Table<PlayerStatsRow>, per40: boolean) {
   const rows = table.getFilteredRowModel().rows;
 
   const headers = [
-    "Player", "Circuit", "Team", "Grad", "Height",
+    "Player", "Circuit", "Team", "Grad", "Height", "High School",
     "GP",
     per40 ? "PTS/40" : "PPG",
     per40 ? "REB/40" : "RPG",
@@ -60,6 +60,7 @@ function exportCSV(table: Table<PlayerStatsRow>, per40: boolean) {
       d.teams?.name ?? "",
       d.players?.grad_year ?? "",
       fmtHeight(d.players?.height_inches ?? null),
+      d.players?.high_school ?? "",
       d.games_played ?? "",
       p40csv(d.ppg, mpg, per40),
       p40csv(d.rpg, mpg, per40),
@@ -72,7 +73,9 @@ function exportCSV(table: Table<PlayerStatsRow>, per40: boolean) {
       d.mpg?.toFixed(1) ?? "",
       d.fg_pct != null ? `${(d.fg_pct * 100).toFixed(1)}%` : "",
       d.three_pt_pct != null ? `${(d.three_pt_pct * 100).toFixed(1)}%` : "",
-      eff != null ? (per40 && mpg ? ((eff / mpg) * 40).toFixed(1) : eff.toFixed(1)) : "",
+      // In per-40 mode we can't compute the rate without minutes — leave blank
+      // rather than emitting raw EFF under a "/40" implication.
+      eff != null && (!per40 || mpg) ? (per40 && mpg ? ((eff / mpg) * 40).toFixed(1) : eff.toFixed(1)) : "",
     ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
   });
 
@@ -106,7 +109,7 @@ export function Toolbar({
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
         <input
           type="text"
-          placeholder="Search player, team, school…"
+          placeholder="Search player, team, circuit…"
           value={(table.getState().globalFilter as string) ?? ""}
           onChange={(e) => table.setGlobalFilter(e.target.value)}
           className="pl-7 pr-3 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 w-56"

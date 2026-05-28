@@ -65,24 +65,46 @@ class On3Enricher:
         self._context: Optional[BrowserContext] = None
 
     async def __aenter__(self) -> "On3Enricher":
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
-        self._context = await self._browser.new_context(
-            user_agent=_USER_AGENT,
-            viewport={"width": 1280, "height": 800},
-        )
+        # If anything between launch() and the final assignment raises, Python
+        # skips __aexit__, leaving the Chromium process and Playwright driver
+        # orphaned. Wrap the partial setup so we can clean up before re-raising.
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            self._context = await self._browser.new_context(
+                user_agent=_USER_AGENT,
+                viewport={"width": 1280, "height": 800},
+            )
+        except Exception:
+            await self._cleanup()
+            raise
         return self
 
-    async def __aexit__(self, *_: Any) -> None:
+    async def _cleanup(self) -> None:
         if self._context:
-            await self._context.close()
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+    async def __aexit__(self, *_: Any) -> None:
+        await self._cleanup()
 
     async def lookup(self, first: str, last: str) -> Optional[On3Profile]:
         if self._context is None:

@@ -21,7 +21,6 @@ interface WatchlistTabProps {
   starred: Set<string>;
   annotations: Record<string, WatchlistEntry>;
   statusOptions: string[];
-  toggleStar: (id: string) => void;
   setNotes: (id: string, notes: string) => void;
   setStatus: (id: string, status: string | null) => void;
   addStatusOption: (label: string) => void;
@@ -138,7 +137,6 @@ export function WatchlistTab({
   starred,
   annotations,
   statusOptions,
-  toggleStar,
   setNotes,
   setStatus,
   addStatusOption,
@@ -170,10 +168,9 @@ export function WatchlistTab({
     return [...new Set(src.map((r) => r.teams?.circuits?.name).filter((n): n is string => Boolean(n)))].sort();
   }, [starredData, selectedSeason]);
 
-  const baseColumns = useMemo(
-    () => createColumns(per40, starred, toggleStar),
-    [per40, starred, toggleStar]
-  );
+  // Star + toggle come from StarredContext now, so the base columns only need
+  // to rebuild on the per40 flip — not on every star toggle.
+  const baseColumns = useMemo(() => createColumns(per40), [per40]);
 
   const columns = useMemo<ColumnDef<PlayerStatsRow>[]>(() => {
     const [starCol, ...statCols] = baseColumns;
@@ -240,7 +237,7 @@ export function WatchlistTab({
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
           <input
             type="text"
-            placeholder="Search player, team, school…"
+            placeholder="Search player, team, circuit…"
             value={(table.getState().globalFilter as string) ?? ""}
             onChange={(e) => table.setGlobalFilter(e.target.value)}
             className="pl-7 pr-3 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 w-56"

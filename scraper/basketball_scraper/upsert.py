@@ -145,12 +145,20 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
     return insert.data[0]["id"]
 
 
-def _paginate(make_query, page_size: int = 1000) -> list[dict]:
-    """Fetch all rows from a PostgREST query, paginating past the 1000-row default cap."""
+def _paginate(make_query, page_size: int = 1000, order_col: str = "id") -> list[dict]:
+    """Fetch all rows from a PostgREST query, paginating past the 1000-row default cap.
+
+    PostgREST does not guarantee a stable row order without an ORDER BY, so without
+    one the page boundaries can shift between requests (under concurrent writes)
+    and silently miss or duplicate rows. We force `.order(order_col)` here so all
+    callers get a stable scan; pass a different column if the table lacks `id`.
+    """
     rows: list[dict] = []
     offset = 0
     while True:
-        page = _execute(make_query().range(offset, offset + page_size - 1)).data or []
+        page = _execute(
+            make_query().order(order_col).range(offset, offset + page_size - 1)
+        ).data or []
         rows.extend(page)
         if len(page) < page_size:
             return rows
@@ -191,20 +199,56 @@ def dedup_adidas_cross_circuit(client: Client, season: int) -> None:
     # Find players who have stats in both circuits this season.
     # Paginate — PostgREST caps each request at 1000 rows by default, and Adidas
     # circuits routinely yield tens of thousands of stats rows per season.
+    # Pull the numeric stats too so we can verify Gold and 3SSB really do match
+    # before deleting; if they ever diverge (e.g. one tier reports a subset),
+    # silently deleting the Gold row would lose real data.
+    _MATCH_FIELDS = ("games_played", "ppg", "rpg", "apg", "spg", "bpg", "fg_pct", "three_pt_pct")
+    _select_cols = "id,player_id,team_id," + ",".join(_MATCH_FIELDS)
     gold_stats = _paginate(lambda: (
-        client.table("player_season_stats").select("id,player_id,team_id")
+        client.table("player_season_stats").select(_select_cols)
         .eq("season", season)
         .in_("team_id", gold_team_ids)
     ))
-    ssb_player_ids = {
-        r["player_id"] for r in _paginate(lambda: (
-            client.table("player_season_stats").select("player_id")
-            .eq("season", season)
-            .in_("team_id", ssb_team_ids)
-        ))
-    }
+    ssb_by_player: dict[str, dict] = {}
+    for r in _paginate(lambda: (
+        client.table("player_season_stats").select(_select_cols)
+        .eq("season", season)
+        .in_("team_id", ssb_team_ids)
+    )):
+        # If a player somehow has multiple 3SSB rows, keep the first — they
+        # should already be deduped upstream by team/season.
+        ssb_by_player.setdefault(r["player_id"], r)
 
-    to_delete = [r["id"] for r in gold_stats if r["player_id"] in ssb_player_ids]
+    def _matches(gold: dict, ssb: dict) -> bool:
+        for f in _MATCH_FIELDS:
+            gv, sv = gold.get(f), ssb.get(f)
+            if gv is None and sv is None:
+                continue
+            if gv is None or sv is None:
+                return False
+            # Tolerate tiny float drift from independent rounding
+            if abs(float(gv) - float(sv)) > 0.05:
+                return False
+        return True
+
+    to_delete: list[str] = []
+    diverged = 0
+    for g in gold_stats:
+        ssb = ssb_by_player.get(g["player_id"])
+        if ssb is None:
+            continue
+        if _matches(g, ssb):
+            to_delete.append(g["id"])
+        else:
+            diverged += 1
+
+    if diverged:
+        logger.warning(
+            "Skipped %d Gold rows that have a 3SSB row but with diverging stats (season %d) — "
+            "left in place; inspect manually if this number is high",
+            diverged, season,
+        )
+
     if to_delete:
         # Delete in batches of 100 to keep the URL short for the .in_() filter
         for i in range(0, len(to_delete), 100):

@@ -19,11 +19,9 @@ import { Pagination } from "./pagination";
 interface DataTableProps {
   data: PlayerStatsRow[];
   seasons: number[];
-  starred: Set<string>;
-  onToggleStar: (id: string) => void;
 }
 
-export function DataTable({ data, seasons, starred, onToggleStar }: DataTableProps) {
+export function DataTable({ data, seasons }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "ppg", desc: true }]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -66,7 +64,9 @@ export function DataTable({ data, seasons, starred, onToggleStar }: DataTablePro
     ].sort();
   }, [data, selectedSeason]);
 
-  const columns = useMemo(() => createColumns(per40, starred, onToggleStar), [per40, starred, onToggleStar]);
+  // `starred` is read from StarredContext inside the star cell, so the columns
+  // array stays stable across star toggles — only the per40 toggle rebuilds it.
+  const columns = useMemo(() => createColumns(per40), [per40]);
 
   const table = useReactTable({
     data: filteredData,

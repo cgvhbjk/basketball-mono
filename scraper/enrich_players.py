@@ -36,8 +36,16 @@ def _load_checkpoint() -> set[str]:
 
 
 def _save_checkpoint(done: set[str]) -> None:
-    with open(_CHECKPOINT_PATH, "w") as f:
+    # Atomic write: dump to a sibling temp file and rename. open("w") truncates
+    # immediately, so a SIGKILL/power-loss between truncate and full write would
+    # leave a partial JSON file that _load_checkpoint silently treats as "no
+    # checkpoint" — meaning every already-processed player gets re-fetched.
+    tmp_path = _CHECKPOINT_PATH + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(list(done), f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, _CHECKPOINT_PATH)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -76,85 +84,111 @@ async def run_on3(supabase, limit: int, dry_run: bool) -> None:
     if done_ids:
         logger.info("Resuming from checkpoint — %d players already attempted", len(done_ids))
 
-    # Fetch limit + checkpoint size so we still process `limit` fresh players on resume
-    fetch_limit = limit + len(done_ids)
-    result = (
-        supabase.table("players")
-        .select("id, first_name, last_name, height_inches, grad_year, high_school, national_rank")
-        .or_("national_rank.is.null,height_inches.is.null")
-        .order("last_name")
-        .limit(fetch_limit)
-        .execute()
-    )
-    all_players = result.data or []
-    players = [p for p in all_players if p["id"] not in done_ids]
+    # Pull candidate players page by page until we've found `limit` fresh ones,
+    # rather than guessing fetch_limit = limit + len(done_ids). PostgREST caps
+    # each request at 1000 rows, so a previous "limit + done" approach could
+    # silently return a window that's entirely already-done and strand the
+    # remaining fresh names off-page.
+    PAGE = 1000
+    MAX_SCAN = 20_000  # hard ceiling so a misconfigured run can't crawl forever
+    players: list[dict] = []
+    scanned = 0
+    offset = 0
+    while len(players) < limit and scanned < MAX_SCAN:
+        result = (
+            supabase.table("players")
+            .select("id, first_name, last_name, height_inches, grad_year, high_school, national_rank")
+            .or_("national_rank.is.null,height_inches.is.null")
+            .order("last_name")
+            .order("id")
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        page = result.data or []
+        if not page:
+            break
+        scanned += len(page)
+        offset += PAGE
+        for p in page:
+            if p["id"] not in done_ids:
+                players.append(p)
+                if len(players) >= limit:
+                    break
     logger.info(
-        "Found %d players to enrich via On3 (%d skipped via checkpoint)",
-        len(players), len(done_ids),
+        "Found %d players to enrich via On3 (%d skipped via checkpoint, scanned %d candidate rows)",
+        len(players), len(done_ids), scanned,
     )
 
     updated = skipped = not_found = 0
-    async with On3Enricher() as enricher:
-        for i, player in enumerate(players, 1):
-            pid = player["id"]
-            first, last = player["first_name"], player["last_name"]
+    # try/finally so the checkpoint reflects everything actually processed —
+    # without it, a crash or KeyboardInterrupt between checkpoint intervals
+    # discards all in-memory progress and the next run redoes that work.
+    try:
+        async with On3Enricher() as enricher:
+            for i, player in enumerate(players, 1):
+                pid = player["id"]
+                first, last = player["first_name"], player["last_name"]
 
-            if _is_bad_name(first) or _is_bad_name(last):
-                logger.info("[%d/%d] Skipping %s %s (bad name)", i, len(players), first, last)
-                done_ids.add(pid)
-                not_found += 1
-                continue
+                if _is_bad_name(first) or _is_bad_name(last):
+                    logger.info("[%d/%d] Skipping %s %s (bad name)", i, len(players), first, last)
+                    # Bad names won't change between runs, so checkpoint them permanently
+                    done_ids.add(pid)
+                    not_found += 1
+                    continue
 
-            logger.info("[%d/%d] Looking up %s %s on On3...", i, len(players), first, last)
+                logger.info("[%d/%d] Looking up %s %s on On3...", i, len(players), first, last)
 
-            profile = await enricher.lookup(first, last)
-            if profile is None:
-                not_found += 1
-                logger.info("  → not found")
-            else:
-                patch: dict = {}
-                if profile.height_inches is not None and player["height_inches"] is None:
-                    patch["height_inches"] = profile.height_inches
-                if profile.grad_year is not None and player["grad_year"] is None:
-                    patch["grad_year"] = profile.grad_year
-                if profile.high_school is not None and player["high_school"] is None:
-                    patch["high_school"] = profile.high_school
-                if profile.hometown:
-                    patch["hometown"] = profile.hometown
-                if profile.star_rating:
-                    patch["star_rating"] = profile.star_rating
-                if profile.national_rank:
-                    patch["national_rank"] = profile.national_rank
-                if profile.state_rank:
-                    patch["state_rank"] = profile.state_rank
-
-                if patch:
-                    logger.info("  → patching: %s", patch)
-                    if not dry_run:
-                        supabase.table("players").update(patch).eq("id", pid).execute()
-                    updated += 1
+                profile = await enricher.lookup(first, last)
+                if profile is None:
+                    # Don't checkpoint "not found" — On3 may index this player later
+                    # and we want the next run to retry. (Bad-name skips above are
+                    # the only permanent-skip case.)
+                    not_found += 1
+                    logger.info("  → not found")
                 else:
-                    skipped += 1
-                    logger.info("  → no new data found")
+                    patch: dict = {}
+                    if profile.height_inches is not None and player["height_inches"] is None:
+                        patch["height_inches"] = profile.height_inches
+                    if profile.grad_year is not None and player["grad_year"] is None:
+                        patch["grad_year"] = profile.grad_year
+                    if profile.high_school is not None and player["high_school"] is None:
+                        patch["high_school"] = profile.high_school
+                    if profile.hometown:
+                        patch["hometown"] = profile.hometown
+                    if profile.star_rating:
+                        patch["star_rating"] = profile.star_rating
+                    if profile.national_rank:
+                        patch["national_rank"] = profile.national_rank
+                    if profile.state_rank:
+                        patch["state_rank"] = profile.state_rank
 
-            done_ids.add(pid)
-            if not dry_run and i % _CHECKPOINT_INTERVAL == 0:
-                _save_checkpoint(done_ids)
-                logger.info("Checkpoint saved (%d/%d processed)", i, len(players))
+                    if patch:
+                        logger.info("  → patching: %s", patch)
+                        if not dry_run:
+                            supabase.table("players").update(patch).eq("id", pid).execute()
+                        updated += 1
+                    else:
+                        skipped += 1
+                        logger.info("  → no new data found")
+                    done_ids.add(pid)
 
-            if i < len(players):
-                await asyncio.sleep(REQUEST_DELAY)
+                if not dry_run and i % _CHECKPOINT_INTERVAL == 0:
+                    _save_checkpoint(done_ids)
+                    logger.info("Checkpoint saved (%d/%d processed)", i, len(players))
+
+                if i < len(players):
+                    await asyncio.sleep(REQUEST_DELAY)
+    finally:
+        # Always flush the checkpoint, even on exception or Ctrl-C, so the
+        # players we did successfully process don't get re-enriched next run.
+        if not dry_run and done_ids:
+            _save_checkpoint(done_ids)
 
     logger.info(
         "On3 done. Updated: %d | No new data: %d | Not found: %d%s",
         updated, skipped, not_found,
         " (dry-run)" if dry_run else "",
     )
-
-    # Clear checkpoint on clean completion
-    if not dry_run and os.path.exists(_CHECKPOINT_PATH):
-        os.remove(_CHECKPOINT_PATH)
-        logger.info("Checkpoint cleared")
 
 
 async def run_passport(supabase, limit: int, dry_run: bool) -> None:

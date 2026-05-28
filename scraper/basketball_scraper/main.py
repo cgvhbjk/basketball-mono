@@ -120,90 +120,100 @@ async def main() -> None:
                 continue
 
             logger.info("[%d/%d] Processing %s", i, len(teams), team.name)
-            db_team_id = team_id_map[team.source_id]
+            try:
+                db_team_id = team_id_map[team.source_id]
 
-            # Roster + players
-            entries = await scraper.fetch_roster(team)
-            roster_rows = []
-            team_players = []  # (Player, db_player_id) — reused for bio-sync after fetch_stats
+                # Roster + players
+                entries = await scraper.fetch_roster(team)
+                roster_rows = []
+                team_players = []  # (Player, db_player_id) — reused for bio-sync after fetch_stats
 
-            for player, roster_entry in entries:
-                player_row = {
-                    "first_name": player.first_name,
-                    "last_name": player.last_name,
-                    "height_inches": player.height_inches,
-                    "weight_lbs": player.weight_lbs,
-                    "grad_year": player.grad_year,
-                    "hometown": player.hometown,
-                    "high_school": player.high_school,
-                    "position": player.position,
-                    "passport_id": player.source_id if store_passport else None,
-                }
-                db_player_id = get_or_create_player(supabase, player_row)
-                player_id_map[player.source_id] = db_player_id
-                team_players.append((player, db_player_id))
+                for player, roster_entry in entries:
+                    player_row = {
+                        "first_name": player.first_name,
+                        "last_name": player.last_name,
+                        "height_inches": player.height_inches,
+                        "weight_lbs": player.weight_lbs,
+                        "grad_year": player.grad_year,
+                        "hometown": player.hometown,
+                        "high_school": player.high_school,
+                        "position": player.position,
+                        "passport_id": player.source_id if store_passport else None,
+                    }
+                    db_player_id = get_or_create_player(supabase, player_row)
+                    player_id_map[player.source_id] = db_player_id
+                    team_players.append((player, db_player_id))
 
-                if db_team_id:
-                    roster_rows.append({
-                        "team_id": db_team_id,
+                    if db_team_id:
+                        roster_rows.append({
+                            "team_id": db_team_id,
+                            "player_id": db_player_id,
+                            "season": settings.season,
+                            "jersey_number": roster_entry.jersey_number,
+                            "position": roster_entry.position,
+                        })
+
+                deduped_roster = list(
+                    {(r["team_id"], r["player_id"], r["season"]): r for r in roster_rows}.values()
+                )
+                upsert_rows(supabase, "team_rosters", deduped_roster, "team_id,player_id,season")
+                total_roster += len(deduped_roster)
+
+                # Stats — fetch_stats may enrich Player objects in-place (e.g. EYBL)
+                raw_stats = await scraper.fetch_stats(team)
+                stats_rows = []
+                for s in raw_stats:
+                    db_player_id = player_id_map.get(s.source_player_id)
+                    if not db_player_id or not db_team_id:
+                        continue
+                    stats_rows.append({
                         "player_id": db_player_id,
-                        "season": settings.season,
-                        "jersey_number": roster_entry.jersey_number,
-                        "position": roster_entry.position,
+                        "team_id": db_team_id,
+                        "season": s.season,
+                        "age_division": s.age_division,
+                        "games_played": s.games_played,
+                        "ppg": s.ppg,
+                        "rpg": s.rpg,
+                        "apg": s.apg,
+                        "spg": s.spg,
+                        "bpg": s.bpg,
+                        "fg_pct": s.fg_pct,
+                        "three_pt_pct": s.three_pt_pct,
+                        "fga": s.fga,
+                        "oreb": s.oreb,
+                        "tpg": s.tpg,
+                        "fta": s.fta,
+                        "mpg": s.mpg,
                     })
 
-            deduped_roster = list(
-                {(r["team_id"], r["player_id"], r["season"]): r for r in roster_rows}.values()
-            )
-            upsert_rows(supabase, "team_rosters", deduped_roster, "team_id,player_id,season")
-            total_roster += len(deduped_roster)
+                deduped_stats = list(
+                    {(r["player_id"], r["team_id"], r["season"]): r for r in stats_rows}.values()
+                )
+                upsert_rows(supabase, "player_season_stats", deduped_stats, "player_id,team_id,season")
+                total_stats += len(deduped_stats)
 
-            # Stats — fetch_stats may enrich Player objects in-place (e.g. EYBL)
-            raw_stats = await scraper.fetch_stats(team)
-            stats_rows = []
-            for s in raw_stats:
-                db_player_id = player_id_map.get(s.source_player_id)
-                if not db_player_id or not db_team_id:
-                    continue
-                stats_rows.append({
-                    "player_id": db_player_id,
-                    "team_id": db_team_id,
-                    "season": s.season,
-                    "age_division": s.age_division,
-                    "games_played": s.games_played,
-                    "ppg": s.ppg,
-                    "rpg": s.rpg,
-                    "apg": s.apg,
-                    "spg": s.spg,
-                    "bpg": s.bpg,
-                    "fg_pct": s.fg_pct,
-                    "three_pt_pct": s.three_pt_pct,
-                    "fga": s.fga,
-                    "oreb": s.oreb,
-                    "tpg": s.tpg,
-                    "fta": s.fta,
-                    "mpg": s.mpg,
-                })
+                # Bio-sync: flush fields enriched during fetch_stats (uses already-fetched Player objects)
+                for player, db_id in team_players:
+                    bio = {
+                        k: getattr(player, k)
+                        for k in ("height_inches", "position", "grad_year", "high_school", "hometown")
+                        if getattr(player, k) is not None
+                    }
+                    if bio:
+                        patch_player_bio_nulls(supabase, db_id, bio)
 
-            deduped_stats = list(
-                {(r["player_id"], r["team_id"], r["season"]): r for r in stats_rows}.values()
-            )
-            upsert_rows(supabase, "player_season_stats", deduped_stats, "player_id,team_id,season")
-            total_stats += len(deduped_stats)
-
-            # Bio-sync: flush fields enriched during fetch_stats (uses already-fetched Player objects)
-            for player, db_id in team_players:
-                bio = {
-                    k: getattr(player, k)
-                    for k in ("height_inches", "position", "grad_year", "high_school", "hometown")
-                    if getattr(player, k) is not None
-                }
-                if bio:
-                    patch_player_bio_nulls(supabase, db_id, bio)
-
-            done_team_ids.add(team.source_id)
-            _save_checkpoint(checkpoint_path, done_team_ids)
-            logger.info("Checkpoint: %d/%d teams done", len(done_team_ids), len(teams))
+                done_team_ids.add(team.source_id)
+                _save_checkpoint(checkpoint_path, done_team_ids)
+                logger.info("Checkpoint: %d/%d teams done", len(done_team_ids), len(teams))
+            except BlockedError:
+                # CDN/Incapsula blocks are circuit-wide — let the outer handler abort.
+                raise
+            except Exception as exc:
+                # Isolate per-team failures (bad parse, transient HTTP error,
+                # one Pydantic ValidationError) so the rest of the circuit still
+                # runs. The team stays out of the checkpoint so a retry picks it up.
+                logger.exception("Team %s (%s) failed — skipping: %s", team.name, team.source_id, exc)
+                continue
 
         logger.info("Done. Teams: %d | Roster entries: %d | Stat rows: %d",
                     len(teams), total_roster, total_stats)

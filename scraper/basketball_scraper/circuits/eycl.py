@@ -73,6 +73,13 @@ class EYCLScraper(BaseCircuit):
             logger.warning("Could not fetch EYCL roster for team %s: %s", team.name, exc)
             return []
 
+        # Defensive: the endpoint normally returns a dict, but treat a non-dict
+        # (list/null/string from a future API change or transient garbage) as no
+        # roster rather than letting data.get(...) AttributeError abort the circuit.
+        if not isinstance(data, dict):
+            logger.warning("EYCL roster for team %s returned non-dict JSON: %r", team.name, type(data))
+            return []
+
         results = _parse_roster_json(data, team.source_id)
         # Cache player IDs so fetch_stats can look them up
         self._team_player_ids[team.source_id] = [
@@ -130,9 +137,13 @@ def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:
         if not name:
             continue
         # Detect real division from suffix ("All Iowa Attack 16 EYCL" → "16U")
-        # before stripping so the Team gets the correct age_division.
+        # before stripping so the Team gets the correct age_division. Only accept
+        # values the Team model's Literal allows ("15U"/"16U"/"17U"); anything
+        # else (e.g. "14 EYCL" → "14U") falls back to the run's default rather
+        # than raising a ValidationError that aborts the whole circuit.
         div_match = re.search(r'\b(\d+)\s+EYCL\s*$', name, flags=re.IGNORECASE)
-        detected_division = f"{div_match.group(1)}U" if div_match else age_division
+        candidate = f"{div_match.group(1)}U" if div_match else age_division
+        detected_division = candidate if candidate in {"15U", "16U", "17U"} else age_division
         name = re.sub(r'\s+\d+\s+EYCL\s*$', '', name, flags=re.IGNORECASE).strip()
         teams.append(Team(
             source_id=dtid,
