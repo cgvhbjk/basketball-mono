@@ -13,6 +13,7 @@ Usage:
 """
 import asyncio
 import argparse
+import json
 import logging
 import sys
 import os
@@ -22,8 +23,30 @@ sys.path.insert(0, os.path.dirname(__file__))
 from supabase import create_client
 from basketball_scraper.config import settings
 
+_CHECKPOINT_PATH = os.path.join(os.path.dirname(__file__), ".checkpoint_on3_enrich.json")
+_CHECKPOINT_INTERVAL = 100
+
+
+def _load_checkpoint() -> set[str]:
+    try:
+        with open(_CHECKPOINT_PATH) as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def _save_checkpoint(done: set[str]) -> None:
+    with open(_CHECKPOINT_PATH, "w") as f:
+        json.dump(list(done), f)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _is_bad_name(s: str) -> bool:
+    if not s or len(s) < 2:
+        return True
+    return not any(c.isalpha() for c in s)
 
 
 def clean_bad_players(supabase) -> int:
@@ -32,7 +55,7 @@ def clean_bad_players(supabase) -> int:
     bad_ids = [
         r["id"]
         for r in (result.data or [])
-        if len(r["first_name"]) < 2 or (r["last_name"] and len(r["last_name"]) < 2)
+        if _is_bad_name(r["first_name"]) or _is_bad_name(r["last_name"])
     ]
     if not bad_ids:
         logger.info("No bad player records found")
@@ -49,22 +72,39 @@ def clean_bad_players(supabase) -> int:
 async def run_on3(supabase, limit: int, dry_run: bool) -> None:
     from basketball_scraper.enrich_on3 import On3Enricher, REQUEST_DELAY
 
+    done_ids = _load_checkpoint()
+    if done_ids:
+        logger.info("Resuming from checkpoint — %d players already attempted", len(done_ids))
+
+    # Fetch limit + checkpoint size so we still process `limit` fresh players on resume
+    fetch_limit = limit + len(done_ids)
     result = (
         supabase.table("players")
         .select("id, first_name, last_name, height_inches, grad_year, high_school, national_rank")
         .or_("national_rank.is.null,height_inches.is.null")
         .order("last_name")
-        .limit(limit)
+        .limit(fetch_limit)
         .execute()
     )
-    players = result.data or []
-    logger.info("Found %d players to enrich via On3", len(players))
+    all_players = result.data or []
+    players = [p for p in all_players if p["id"] not in done_ids]
+    logger.info(
+        "Found %d players to enrich via On3 (%d skipped via checkpoint)",
+        len(players), len(done_ids),
+    )
 
     updated = skipped = not_found = 0
     async with On3Enricher() as enricher:
         for i, player in enumerate(players, 1):
             pid = player["id"]
             first, last = player["first_name"], player["last_name"]
+
+            if _is_bad_name(first) or _is_bad_name(last):
+                logger.info("[%d/%d] Skipping %s %s (bad name)", i, len(players), first, last)
+                done_ids.add(pid)
+                not_found += 1
+                continue
+
             logger.info("[%d/%d] Looking up %s %s on On3...", i, len(players), first, last)
 
             profile = await enricher.lookup(first, last)
@@ -97,6 +137,11 @@ async def run_on3(supabase, limit: int, dry_run: bool) -> None:
                     skipped += 1
                     logger.info("  → no new data found")
 
+            done_ids.add(pid)
+            if not dry_run and i % _CHECKPOINT_INTERVAL == 0:
+                _save_checkpoint(done_ids)
+                logger.info("Checkpoint saved (%d/%d processed)", i, len(players))
+
             if i < len(players):
                 await asyncio.sleep(REQUEST_DELAY)
 
@@ -105,6 +150,11 @@ async def run_on3(supabase, limit: int, dry_run: bool) -> None:
         updated, skipped, not_found,
         " (dry-run)" if dry_run else "",
     )
+
+    # Clear checkpoint on clean completion
+    if not dry_run and os.path.exists(_CHECKPOINT_PATH):
+        os.remove(_CHECKPOINT_PATH)
+        logger.info("Checkpoint cleared")
 
 
 async def run_passport(supabase, limit: int, dry_run: bool) -> None:

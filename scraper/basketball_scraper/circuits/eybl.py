@@ -8,12 +8,20 @@ URL patterns:
   Player detail: /player.html?playerid={id}&seasonid={seasonid}
   Stats leaders: /stats.html?leagueid=1366&seasonid={seasonid}
 
-Season IDs: 544 = current active season (label changes per session).
-To find new season IDs, check the dropdown on the standings page.
+Season IDs: 544 was found to be an old season (~2020) based on the players
+it returned (Moses Moody, James Wiseman, etc. — current NBA players).
+The correct 2026 season ID is unknown because Pointstreak blocks this IP
+via Incapsula (edet=16 = IP reputation block).
+
+To find the correct season ID:
+  1. Use a different IP / VPN, or
+  2. Check nikeeybl.com/live-statistics and inspect the Pointstreak embed URL
+  3. Update SEASON_ID below and re-run: python run_all.py --circuits eybl
 """
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import re
 from string import ascii_uppercase
 from bs4 import BeautifulSoup
@@ -27,7 +35,10 @@ logger = logging.getLogger(__name__)
 
 BASE_URL   = "http://nikeeyb.hoopstats.pointstreak.com"
 LEAGUE_ID  = 1366
-SEASON_ID  = 544  # Update if Pointstreak rolls to a new season ID
+# 544 was confirmed to be ~2020 data. The correct current ID must be supplied via env
+# until we can verify it (see module docstring). Refuse to run with a stale ID rather
+# than silently writing decade-old NBA players into the current season.
+SEASON_ID  = int(os.environ.get("EYBL_SEASON_ID", "0"))
 
 
 class EYBLScraper(BaseCircuit):
@@ -41,6 +52,12 @@ class EYBLScraper(BaseCircuit):
         self._all_players: dict[str, list[tuple[Player, RosterEntry]]] | None = None
 
     async def fetch_teams(self) -> list[Team]:
+        if SEASON_ID == 0:
+            raise RuntimeError(
+                "EYBL_SEASON_ID env var is not set. The previously-hardcoded ID (544) "
+                "returns ~2020 data; running the scraper without a verified current ID "
+                "would pollute the DB with NBA-era players. See the module docstring."
+            )
         url = f"{BASE_URL}/teamlist.html?leagueid={LEAGUE_ID}&seasonid={SEASON_ID}"
         logger.info("Fetching EYBL teams from %s", url)
         html = await self.fetcher.fetch_html(url)
@@ -240,8 +257,8 @@ def _parse_player_stats(
         except ValueError:
             return None
 
-    # --- Pass 1: season-averages table (PPG / RPG / APG) ---
-    ppg = rpg = apg = None
+    # --- Pass 1: season-averages table (PPG / RPG / APG / SPG / BPG) ---
+    ppg = rpg = apg = spg = bpg = None
     for table in soup.find_all("table"):
         headers = [th.get_text(strip=True).upper() for th in table.find_all("th")]
         if "PPG" in headers and "RPG" in headers and "APG" in headers:
@@ -258,6 +275,8 @@ def _parse_player_stats(
                 ppg = safe_float(_p1_cell("PPG"))
                 rpg = safe_float(_p1_cell("RPG"))
                 apg = safe_float(_p1_cell("APG"))
+                spg = safe_float(_p1_cell("SPG"))
+                bpg = safe_float(_p1_cell("BPG"))
                 break
             break
 
@@ -317,8 +336,8 @@ def _parse_player_stats(
         ppg=ppg,
         rpg=rpg,
         apg=apg,
-        spg=None,
-        bpg=None,
+        spg=spg,
+        bpg=bpg,
         fg_pct=(total_fgm / total_fga) if total_fga > 0 else None,
         three_pt_pct=(total_3pm / total_3pa) if total_3pa > 0 else None,
     )

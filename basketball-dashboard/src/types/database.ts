@@ -132,6 +132,11 @@ export interface PlayerSeasonStats {
   bpg: number | null
   fg_pct: number | null
   three_pt_pct: number | null
+  fga: number | null
+  oreb: number | null
+  tpg: number | null
+  fta: number | null
+  mpg: number | null
   updated_at: string
 }
 

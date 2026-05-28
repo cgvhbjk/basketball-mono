@@ -13,6 +13,7 @@ Two passes:
 import logging
 import os
 import sys
+from collections import Counter
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,7 +34,7 @@ def merge_passport_dupes(client) -> None:
     # All players with a passport_id
     result = _execute(
         client.table("players")
-        .select("id,first_name,last_name,passport_id")
+        .select("id,first_name,last_name,passport_id,created_at")
         .not_.is_("passport_id", "null")
         .order("passport_id")
     )
@@ -49,10 +50,13 @@ def merge_passport_dupes(client) -> None:
     for passport_id, group in by_passport.items():
         if len(group) < 2:
             continue
-        # Canonical = record that already has the passport_id set (could be multiple
-        # if there's a unique-constraint violation — shouldn't happen, but defensive).
-        # Use the one whose name matches the passport URL slug best, i.e. longest last_name.
-        canonical = max(group, key=lambda r: len(r.get("last_name") or ""))
+        # Pick the most recently created record as canonical; fall back to longest
+        # last_name when created_at is unavailable. This prefers the record written
+        # by the new scraper run (correct casing) over the stale old-parser record.
+        canonical = max(group, key=lambda r: (
+            len(r.get("last_name") or ""),
+            r.get("created_at") or "",
+        ))
         stale = [r for r in group if r["id"] != canonical["id"]]
         for s in stale:
             logger.info(
@@ -97,10 +101,21 @@ def merge_name_dupes(client) -> None:
         .select("id,first_name,last_name,passport_id")
         .not_.is_("passport_id", "null")
     ).data or [])
-    canonical_by_name = {
-        (r["first_name"].lower(), r["last_name"].lower()): r
-        for r in with_passport
-    }
+    name_counts: Counter = Counter(
+        (r["first_name"].lower(), r["last_name"].lower()) for r in with_passport
+    )
+    canonical_by_name: dict = {}
+    warned: set = set()
+    for r in with_passport:
+        key = (r["first_name"].lower(), r["last_name"].lower())
+        if name_counts[key] == 1:
+            canonical_by_name[key] = r
+        elif key not in warned:
+            logger.warning(
+                "Ambiguous name '%s %s': %d passport players share this name — skipping name-merge",
+                r["first_name"], r["last_name"], name_counts[key],
+            )
+            warned.add(key)
 
     merged = 0
     for stale in no_passport:

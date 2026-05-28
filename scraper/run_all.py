@@ -98,9 +98,12 @@ def main() -> None:
     for circuit, ok in results.items():
         logger.info("  %-15s %s", circuit, "OK" if ok else "FAILED")
 
-    # After both Adidas circuits, remove Gold stats that duplicate 3SSB entries.
-    adidas_both_ran = results.get("3ssb") and results.get("adidas_gold")
-    if adidas_both_ran and not args.dry_run:
+    # Whenever either Adidas circuit ran this invocation, sweep for cross-circuit
+    # duplicates. The other circuit's data may have been scraped in a previous run
+    # and still be in the DB — running dedup only when BOTH ran in the SAME
+    # invocation would leave residual duplicates.
+    adidas_any_ran = results.get("3ssb") or results.get("adidas_gold")
+    if adidas_any_ran and not args.dry_run:
         _dedup_adidas(args.season)
 
     if failed:

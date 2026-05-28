@@ -15,7 +15,7 @@ import os
 from supabase import create_client
 
 from .config import settings
-from .base_fetcher import EmptyPageError
+from .base_fetcher import EmptyPageError, BlockedError
 from .httpx_fetcher import HttpxFetcher
 from .playwright_fetcher import PlaywrightFetcher
 from .upsert import get_circuit_id, get_or_create_team, get_or_create_player, upsert_rows, patch_player_bio_nulls
@@ -178,6 +178,11 @@ async def main() -> None:
                     "bpg": s.bpg,
                     "fg_pct": s.fg_pct,
                     "three_pt_pct": s.three_pt_pct,
+                    "fga": s.fga,
+                    "oreb": s.oreb,
+                    "tpg": s.tpg,
+                    "fta": s.fta,
+                    "mpg": s.mpg,
                 })
 
             deduped_stats = list(
@@ -207,6 +212,9 @@ async def main() -> None:
         if os.path.exists(checkpoint_path):
             os.remove(checkpoint_path)
 
+    except BlockedError as e:
+        logger.error("Circuit blocked (CDN/Incapsula): %s — aborting circuit run", e)
+        raise
     finally:
         await fetcher.close()
 

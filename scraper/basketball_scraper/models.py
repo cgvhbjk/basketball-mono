@@ -58,9 +58,12 @@ class Player(BaseModel):
     def coerce_grad_year(cls, v: object) -> Optional[int]:
         if v is None:
             return None
-        year = int(str(v).strip())
+        try:
+            year = int(str(v).strip())
+        except (ValueError, TypeError):
+            return None
         if not (2024 <= year <= 2032):
-            raise ValueError(f"grad_year {year} outside expected range 2024–2032")
+            return None
         return year
 
 
@@ -77,6 +80,11 @@ class SeasonStats(BaseModel):
     bpg: Optional[float] = None
     fg_pct: Optional[float] = None
     three_pt_pct: Optional[float] = None
+    fga: Optional[float] = None
+    oreb: Optional[float] = None
+    tpg: Optional[float] = None
+    fta: Optional[float] = None
+    mpg: Optional[float] = None
 
     @field_validator("fg_pct", "three_pt_pct", mode="before")
     @classmethod

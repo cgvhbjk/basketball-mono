@@ -45,9 +45,11 @@ class PlaywrightFetcher(BaseFetcher):
 
         page.on("request", self._log_xhr)
 
-        response = await page.goto(url, wait_until=self._wait_until, timeout=self._timeout_ms)
-        html = await page.content()
-        await context.close()
+        try:
+            response = await page.goto(url, wait_until=self._wait_until, timeout=self._timeout_ms)
+            html = await page.content()
+        finally:
+            await context.close()
 
         # Raise on HTTP errors or Incapsula IP-reputation blocks so callers
         # see a real error rather than silently receiving a block page.

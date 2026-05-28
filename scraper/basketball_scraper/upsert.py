@@ -111,12 +111,16 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
                 _execute(client.table("players").update(patch).eq("id", pid))
             return pid
 
-    # 2. Name-based lookup with bio compatibility check
+    # 2. Name-based lookup with bio compatibility check.
+    # Sort by id so the "first match" picked below is deterministic across runs —
+    # otherwise two homonym players (e.g. two "John Smith"s with null bios) could
+    # have stats routed to either one depending on Supabase row order.
     result = _execute(
         client.table("players")
         .select("id, " + ", ".join(_BIO_FIELDS))
         .eq("first_name", player_data["first_name"])
         .eq("last_name", player_data["last_name"])
+        .order("id")
         .limit(10)
     )
     rows = result.data or []
@@ -139,6 +143,18 @@ def get_or_create_player(client: Client, player_data: dict[str, Any]) -> str:
         return pid
     insert = _execute(client.table("players").insert(player_data))
     return insert.data[0]["id"]
+
+
+def _paginate(make_query, page_size: int = 1000) -> list[dict]:
+    """Fetch all rows from a PostgREST query, paginating past the 1000-row default cap."""
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = _execute(make_query().range(offset, offset + page_size - 1)).data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
 
 
 def dedup_adidas_cross_circuit(client: Client, season: int) -> None:
@@ -169,26 +185,31 @@ def dedup_adidas_cross_circuit(client: Client, season: int) -> None:
     if not gold_teams or not ssb_teams:
         return
 
-    gold_team_ids = {r["id"] for r in gold_teams}
-    ssb_team_ids  = {r["id"] for r in ssb_teams}
+    gold_team_ids = list({r["id"] for r in gold_teams})
+    ssb_team_ids  = list({r["id"] for r in ssb_teams})
 
-    # Find players who have stats in both circuits this season
-    gold_stats = _execute(
+    # Find players who have stats in both circuits this season.
+    # Paginate — PostgREST caps each request at 1000 rows by default, and Adidas
+    # circuits routinely yield tens of thousands of stats rows per season.
+    gold_stats = _paginate(lambda: (
         client.table("player_season_stats").select("id,player_id,team_id")
         .eq("season", season)
-        .in_("team_id", list(gold_team_ids))
-    ).data or []
+        .in_("team_id", gold_team_ids)
+    ))
     ssb_player_ids = {
-        r["player_id"] for r in (_execute(
+        r["player_id"] for r in _paginate(lambda: (
             client.table("player_season_stats").select("player_id")
             .eq("season", season)
-            .in_("team_id", list(ssb_team_ids))
-        ).data or [])
+            .in_("team_id", ssb_team_ids)
+        ))
     }
 
     to_delete = [r["id"] for r in gold_stats if r["player_id"] in ssb_player_ids]
     if to_delete:
-        _execute(client.table("player_season_stats").delete().in_("id", to_delete))
+        # Delete in batches of 100 to keep the URL short for the .in_() filter
+        for i in range(0, len(to_delete), 100):
+            batch = to_delete[i:i + 100]
+            _execute(client.table("player_season_stats").delete().in_("id", batch))
         logger.info(
             "Removed %d Gold stats rows that duplicated 3SSB entries (season %d)",
             len(to_delete), season,

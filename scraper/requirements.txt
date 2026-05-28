@@ -1,5 +1,6 @@
 httpx
 playwright
+playwright-stealth
 beautifulsoup4
 pydantic
 pydantic-settings

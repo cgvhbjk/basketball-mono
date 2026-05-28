@@ -43,6 +43,8 @@ class Adidas3SSBScraper(BaseCircuit):
         super().__init__(*args, **kwargs)
         # {team_slug: [(player, roster_entry, stats), ...]}
         self._cache: dict[str, list[tuple[Player, RosterEntry, SeasonStats]]] | None = None
+        # Lock so two concurrent _get_cache() callers don't both launch a browser.
+        self._cache_lock = asyncio.Lock()
 
     def _adidas_season(self) -> int:
         return self.season + ADIDAS_SEASON_OFFSET
@@ -60,55 +62,55 @@ class Adidas3SSBScraper(BaseCircuit):
                 )
                 logger.info("Adidas 3SSB loading playLevel=%s from %s", level, url)
                 page = await browser.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-
                 try:
-                    await page.wait_for_selector(
-                        "table.ogp-stats-table tbody tr, table tbody tr td a", timeout=15_000
-                    )
-                except Exception:
-                    logger.warning("Adidas stats table did not appear for playLevel=%s", level)
-                    await page.close()
-                    continue
+                    await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
 
-                # Determine total pages from "Page 1 of N" text in .ogp-page-info.
-                # The pagination widget uses button.ogp-page-next, NOT a data-total-pages attr.
-                total_pages = 1
-                page_info_el = await page.query_selector(".ogp-page-info")
-                if page_info_el:
-                    info_text = await page_info_el.inner_text()
-                    m = re.search(r"of\s+(\d+)", info_text)
-                    if m:
-                        total_pages = int(m.group(1))
-                logger.info("playLevel=%s has %d page(s)", level, total_pages)
+                    try:
+                        await page.wait_for_selector(
+                            "table.ogp-stats-table tbody tr, table tbody tr td a", timeout=15_000
+                        )
+                    except Exception:
+                        logger.warning("Adidas stats table did not appear for playLevel=%s", level)
+                        continue
 
-                for page_num in range(1, total_pages + 1):
-                    html = await page.content()
-                    entries = _parse_stats_page(
-                        html, self.season, self.age_division
-                    )
-                    for player, roster_entry, stats in entries:
-                        team_slug = roster_entry.source_team_id
-                        by_team.setdefault(team_slug, []).append((player, roster_entry, stats))
+                    # Determine total pages from "Page 1 of N" text in .ogp-page-info.
+                    # The pagination widget uses button.ogp-page-next, NOT a data-total-pages attr.
+                    total_pages = 1
+                    page_info_el = await page.query_selector(".ogp-page-info")
+                    if page_info_el:
+                        info_text = await page_info_el.inner_text()
+                        m = re.search(r"of\s+(\d+)", info_text)
+                        if m:
+                            total_pages = int(m.group(1))
+                    logger.info("playLevel=%s has %d page(s)", level, total_pages)
 
-                    if page_num < total_pages:
-                        # Next is a <button class="ogp-page-next">, not an <a> tag.
-                        clicked = False
-                        for selector in (
-                            "button.ogp-page-next:not([disabled])",
-                            ".ogp-page-next",
-                        ):
-                            btn = page.locator(selector).first
-                            if await btn.count() > 0:
-                                await btn.click()
-                                await asyncio.sleep(2.0)
-                                clicked = True
+                    for page_num in range(1, total_pages + 1):
+                        html = await page.content()
+                        entries = _parse_stats_page(
+                            html, self.season, self.age_division
+                        )
+                        for player, roster_entry, stats in entries:
+                            team_slug = roster_entry.source_team_id
+                            by_team.setdefault(team_slug, []).append((player, roster_entry, stats))
+
+                        if page_num < total_pages:
+                            # Next is a <button class="ogp-page-next">, not an <a> tag.
+                            clicked = False
+                            for selector in (
+                                "button.ogp-page-next:not([disabled])",
+                                ".ogp-page-next",
+                            ):
+                                btn = page.locator(selector).first
+                                if await btn.count() > 0:
+                                    await btn.click()
+                                    await asyncio.sleep(2.0)
+                                    clicked = True
+                                    break
+                            if not clicked:
+                                logger.warning("Could not find Next button on page %d", page_num)
                                 break
-                        if not clicked:
-                            logger.warning("Could not find Next button on page %d", page_num)
-                            break
-
-                await page.close()
+                finally:
+                    await page.close()
             await browser.close()
 
         logger.info(
@@ -119,8 +121,9 @@ class Adidas3SSBScraper(BaseCircuit):
         return by_team
 
     async def _get_cache(self) -> dict[str, list[tuple[Player, RosterEntry, SeasonStats]]]:
-        if self._cache is None:
-            self._cache = await self._load_cache()
+        async with self._cache_lock:
+            if self._cache is None:
+                self._cache = await self._load_cache()
         return self._cache
 
     async def fetch_teams(self) -> list[Team]:
@@ -242,7 +245,7 @@ def _parse_stats_page(
         last = parts[1] if len(parts) > 1 else ""
 
         gp = safe_int(cell_text(cells, "GP"))
-        if not gp:
+        if gp is None:
             continue
 
         roster_entry = RosterEntry(
@@ -264,10 +267,13 @@ def _parse_stats_page(
                 ppg=safe_float(cell_text(cells, "PPG")),
                 rpg=safe_float(cell_text(cells, "RPG")),
                 apg=safe_float(cell_text(cells, "APG")),
-                spg=safe_float(cell_text(cells, "SPG")),
-                bpg=safe_float(cell_text(cells, "BPG")),
+                # Site may use SPG/BPG or STL/BLK depending on plugin version
+                spg=safe_float(cell_text(cells, "SPG") or cell_text(cells, "STL")),
+                bpg=safe_float(cell_text(cells, "BPG") or cell_text(cells, "BLK")),
                 fg_pct=safe_float(cell_text(cells, "FG%")),
                 three_pt_pct=safe_float(cell_text(cells, "3P%")),
+                tpg=safe_float(cell_text(cells, "TPG")),
+                mpg=safe_float(cell_text(cells, "MPG") or cell_text(cells, "MIN")),
             ),
         ))
 

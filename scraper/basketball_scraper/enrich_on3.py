@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, BrowserContext
+from playwright_stealth import Stealth
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class On3Enricher:
         assert self._context is not None
         page = await self._context.new_page()
         try:
+            await Stealth().apply_stealth_async(page)
             await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             await asyncio.sleep(3.0)
             return await page.content()
@@ -121,6 +123,8 @@ async def lookup_player_profile(first: str, last: str) -> Optional[On3Profile]:
 # ----------------------------------------------------------------
 
 def _name_matches(text: str, first: str, last: str) -> bool:
+    if len(first) < 2 or len(last) < 2:
+        return False
     t = text.lower()
     return first.lower() in t and last.lower() in t
 
@@ -209,17 +213,32 @@ def _player_dict_to_profile(obj: dict) -> On3Profile:
                     pass
 
     # Rankings live inside obj["rating"] as consensusStars / consensusNationalRank /
-    # consensusStateRank in the new /rivals/search/ API.
-    rating_sub = obj.get("rating") if isinstance(obj.get("rating"), dict) else {}
+    # consensusStateRank in the new /rivals/search/ API. Older API variants may
+    # return "rating" as a plain integer — handle both shapes.
+    rating_raw = obj.get("rating")
+    rating_sub = rating_raw if isinstance(rating_raw, dict) else {}
     for key in ("stars", "starRating"):
         val = obj.get(key)
         if isinstance(val, int) and 1 <= val <= 5:
             profile.star_rating = val
             break
     if profile.star_rating is None:
-        val = rating_sub.get("consensusStars")
-        if isinstance(val, int) and 1 <= val <= 5:
-            profile.star_rating = val
+        # Accept float too — On3 half-star UIs sometimes surface 4.5 in the API.
+        # Exclude bool since `isinstance(True, int)` is True in Python.
+        if (
+            isinstance(rating_raw, (int, float))
+            and not isinstance(rating_raw, bool)
+            and 1 <= rating_raw <= 5
+        ):
+            profile.star_rating = int(rating_raw)
+        else:
+            val = rating_sub.get("consensusStars")
+            if (
+                isinstance(val, (int, float))
+                and not isinstance(val, bool)
+                and 1 <= val <= 5
+            ):
+                profile.star_rating = int(val)
 
     for key in ("nationalRank", "nationalRating", "ranking", "rank"):
         val = obj.get(key)

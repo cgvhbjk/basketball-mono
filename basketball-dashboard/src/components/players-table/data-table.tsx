@@ -12,22 +12,25 @@ import {
   ColumnFiltersState,
 } from "@tanstack/react-table";
 import type { PlayerStatsRow } from "@/types/database";
-import { columns } from "./columns";
+import { createColumns } from "./columns";
 import { Toolbar } from "./toolbar";
 import { Pagination } from "./pagination";
 
 interface DataTableProps {
   data: PlayerStatsRow[];
   seasons: number[];
+  starred: Set<string>;
+  onToggleStar: (id: string) => void;
 }
 
-export function DataTable({ data, seasons }: DataTableProps) {
+export function DataTable({ data, seasons, starred, onToggleStar }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "ppg", desc: true }]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [selectedCircuit, setSelectedCircuit] = useState("");
   const [selectedSeason, setSelectedSeason] = useState(seasons[0] ? String(seasons[0]) : "");
   const [selectedDivision, setSelectedDivision] = useState("");
+  const [per40, setPer40] = useState(false);
 
   const handleSeasonChange = (v: string) => {
     setSelectedSeason(v);
@@ -63,6 +66,8 @@ export function DataTable({ data, seasons }: DataTableProps) {
     ].sort();
   }, [data, selectedSeason]);
 
+  const columns = useMemo(() => createColumns(per40, starred, onToggleStar), [per40, starred, onToggleStar]);
+
   const table = useReactTable({
     data: filteredData,
     columns,
@@ -90,6 +95,8 @@ export function DataTable({ data, seasons }: DataTableProps) {
         onCircuitChange={setSelectedCircuit}
         onSeasonChange={handleSeasonChange}
         onDivisionChange={setSelectedDivision}
+        per40={per40}
+        onPer40Change={setPer40}
       />
 
       <div className="flex-1 overflow-auto border border-gray-300 rounded">
@@ -114,7 +121,7 @@ export function DataTable({ data, seasons }: DataTableProps) {
           <tbody>
             {table.getRowModel().rows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="text-center py-8 text-gray-400">
+                <td colSpan={table.getAllColumns().length} className="text-center py-8 text-gray-400">
                   No players found.
                 </td>
               </tr>
