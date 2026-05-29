@@ -28,7 +28,6 @@ BASE_URL = "https://underarmournext.com"
 class UAAScraper(BaseCircuit):
     circuit_name = "UAA"
     circuit_org = "Under Armour"
-    circuit_gender = "boys"
     _HUB_PATH = "/basketball/boys-uaa/"
 
     def __init__(self, *args, **kwargs) -> None:
@@ -248,9 +247,14 @@ def _parse_stats(
                 continue
             spid = m.group(1)
 
-            def cell(name: str) -> str | None:
-                i = idx.get(name)
-                return cells[i].get_text(strip=True) if i is not None and i < len(cells) else None
+            def cell(*names: str) -> str | None:
+                for name in names:
+                    i = idx.get(name)
+                    if i is not None and i < len(cells):
+                        v = cells[i].get_text(strip=True)
+                        if v:
+                            return v
+                return None
 
             gp = _safe_int(cell("GP"))
             if not gp:
@@ -267,8 +271,20 @@ def _parse_stats(
                 apg=_per_game(_safe_int(cell("AST")), gp),
                 spg=_per_game(_safe_int(cell("STL")), gp),
                 bpg=_per_game(_safe_int(cell("BLK")), gp),
+                tpg=_per_game(_safe_int(cell("TO", "TOV")), gp),
+                fpg=_per_game(_safe_int(cell("PF", "FOULS")), gp),
                 fg_pct=_safe_float(cell("FG%")),
-                three_pt_pct=_safe_float(cell("3FG%")),
+                three_pt_pct=_safe_float(cell("3FG%", "3P%")),
+                ft_pct=_safe_float(cell("FT%")),
+                oreb=_per_game(_safe_int(cell("OREB", "OR")), gp),
+                dreb=_per_game(_safe_int(cell("DREB", "DR")), gp),
+                fga=_per_game(_safe_int(cell("FGA")), gp),
+                fgm_pg=_per_game(_safe_int(cell("FGM")), gp),
+                fta=_per_game(_safe_int(cell("FTA")), gp),
+                ftm_pg=_per_game(_safe_int(cell("FTM")), gp),
+                three_pa_pg=_per_game(_safe_int(cell("3FGA", "3PA")), gp),
+                three_pm_pg=_per_game(_safe_int(cell("3FGM", "3PM")), gp),
+                mpg=_per_game(_safe_int(cell("MIN")), gp),
             ))
         break
 

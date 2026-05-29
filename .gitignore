@@ -31,3 +31,13 @@ Thumbs.db
 
 # Scraper checkpoints
 .checkpoint_*.json
+
+# Scraper raw snapshots (potentially gigabytes — keep out of git)
+scraper/snapshots/
+snapshots/
+
+# Pytest
+.pytest_cache/
+
+# Supabase CLI local cache
+basketball-db/supabase/.temp/

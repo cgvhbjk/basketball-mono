@@ -1,6 +1,8 @@
 # basketball-mono
 
-AAU basketball stats scraper + dashboard. Scrapes player/team stats from EYBL, EYCL, Adidas 3SSB, Adidas Gold, UAA, UAA Rise, and PUMA, stores them in Supabase, and displays them in a Next.js dashboard.
+Boys grassroots basketball stats scraper + dashboard. Scrapes player/team stats from Nike EYBL, Nike EYCL (boys), Adidas 3SSB, Adidas Gold, UAA, and UAA Rise. Hoop Group and Made Hoops adapters are scaffolded but not implemented. Stores everything in Supabase and displays it in a Next.js dashboard.
+
+> **Boys-only.** The men's pipeline does not ingest girls circuits. See `scraper/basketball_scraper/circuits/eycl.py` for why the EYCL adapter is configuration-gated.
 
 ## Repo structure
 
@@ -48,22 +50,31 @@ Create `scraper/.env`:
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your-service-role-key
 
-CIRCUIT=eybl          # eybl | eycl | 3ssb | adidas_gold | uaa | uaa_rise | puma
+CIRCUIT=eybl          # eybl | eycl | 3ssb | adidas_gold | uaa | uaa_rise | hoop_group | made_hoops
 SEASON=2026
 AGE_DIVISION=17U      # 15U | 16U | 17U
 USE_PLAYWRIGHT=false
+ENABLE_SNAPSHOTS=true # write raw HTML/JSON to ./snapshots/
 ```
 
-Run a single circuit:
+No circuit-specific env vars are required. EYBL/EYCL use the Cerebro tRPC API
+(no auth, no IDs); 3SSB and Adidas Gold use the public OGP stats API; UAA/UAA
+Rise are server-rendered HTML behind a Playwright-only block. See
+[`scraper/docs/sources.md`](scraper/docs/sources.md) for per-circuit endpoint
+details.
+
+Run via the CLI:
 
 ```bash
-python -m basketball_scraper.main
+python -m basketball_scraper list-circuits
+python -m basketball_scraper ingest --circuit eybl --season 2026 --division 17U
+python -m basketball_scraper ingest-all --circuits eybl uaa 3ssb
 ```
 
-Run all circuits (loops through every circuit × division combination):
+The legacy entry point still works:
 
 ```bash
-python run_all.py
+python -m basketball_scraper.main   # reads CIRCUIT/SEASON/AGE_DIVISION from .env
 ```
 
 Backfill rankings from 247Sports / On3 / Passport:
@@ -110,4 +121,8 @@ You can also trigger it manually from the Actions tab with a specific circuit/se
 
 Migrations live in `basketball-db/supabase/migrations/`. Apply them in order via the Supabase dashboard SQL editor or `supabase db push`.
 
-Key tables: `circuits`, `teams`, `players`, `player_season_stats`
+Key tables: `circuits`, `teams`, `players`, `player_season_stats`, `events`, `games`, `box_scores`, `source_snapshots`, `source_aliases`.
+
+## Adding a new circuit
+
+See [`scraper/docs/adapters.md`](scraper/docs/adapters.md). TL;DR: drop a single file under `scraper/basketball_scraper/circuits/<name>.py` that subclasses `BaseCircuit`, implements `fetch_teams` / `fetch_roster` / `fetch_stats`, and register it in `main.REGISTRY` + `config.CIRCUIT_KEYS`. Prefer JSON endpoints over HTML and run the page through `PlaywrightFetcher` once to log XHR traffic if you're hunting for a hidden API.

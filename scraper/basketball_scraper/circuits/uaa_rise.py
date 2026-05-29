@@ -9,5 +9,4 @@ from .uaa import UAAScraper
 class UAARiseScraper(UAAScraper):
     circuit_name = "UAA Rise"
     circuit_org = "Under Armour"
-    circuit_gender = "boys"
     _HUB_PATH = "/basketball/boys-rise/"

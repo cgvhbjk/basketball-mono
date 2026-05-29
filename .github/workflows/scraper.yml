@@ -11,7 +11,7 @@ on:
         required: true
         default: "uaa"
         type: choice
-        options: [eybl, eycl, 3ssb, adidas_gold, uaa, uaa_rise, puma]
+        options: [eybl, eycl, 3ssb, adidas_gold, uaa, uaa_rise]
       season:
         description: "Season year"
         required: false

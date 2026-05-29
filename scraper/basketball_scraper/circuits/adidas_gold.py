@@ -9,7 +9,6 @@ from .adidas_3ssb import Adidas3SSBScraper
 class AdidasGoldScraper(Adidas3SSBScraper):
     circuit_name = "Gold"
     circuit_org = "Adidas"
-    circuit_gender = "boys"
-    # adidas3ssb.com's playLevel filter takes Platinum / Select / Stripes; per the
-    # docstring, Gold covers Select + Stripes (below Platinum/3SSB).
-    _PLAY_LEVELS = ["Select", "Stripes"]
+    # Gold tier sits under brandNumber=10003 with playLevel=Gold in the live
+    # adidas-stats-wp API (verified May 2026: 1,259 17U players returned).
+    _BRAND_LEVELS = ((10003, "Gold"),)

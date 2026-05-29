@@ -10,7 +10,10 @@ from supabase import Client
 
 logger = logging.getLogger(__name__)
 
-_BIO_FIELDS = ("height_inches", "position", "high_school", "grad_year", "hometown", "passport_id")
+_BIO_FIELDS = (
+    "height_inches", "position", "high_school", "grad_year", "hometown",
+    "passport_id", "date_of_birth", "nationality",
+)
 _RETRIES = 6
 _BACKOFF = 5.0  # seconds; wait doubles each attempt: 5, 10, 20, 40, 80
 
@@ -260,6 +263,91 @@ def dedup_adidas_cross_circuit(client: Client, season: int) -> None:
         )
     else:
         logger.info("No cross-circuit Adidas duplicates found for season %d", season)
+
+
+def get_or_create_event(client: Client, event_data: dict[str, Any]) -> str:
+    """
+    Resolve or insert an event row, keyed by (circuit_id, name, season).
+
+    The unique constraint matches migration 005: UNIQUE (circuit_id, name, season).
+    """
+    result = _execute(
+        client.table("events")
+        .select("id")
+        .eq("circuit_id", event_data["circuit_id"])
+        .eq("name", event_data["name"])
+        .eq("season", event_data["season"])
+        .maybe_single()
+    )
+    data = _data(result)
+    if data:
+        return data["id"]
+    insert = _execute(client.table("events").insert(event_data))
+    return insert.data[0]["id"]
+
+
+def upsert_games(client: Client, rows: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    Upsert game rows and return a {source_id_marker: db_uuid} map.
+
+    Because the `games` table has no native source-id column (rows are keyed
+    by event/home/away/played_at) we do a select-then-insert per game and
+    return the resulting UUID indexed by the caller-supplied "source_marker"
+    key on each row. The marker key is popped before the insert.
+
+    Each input dict must have:
+      - source_marker (str)  — opaque identifier, returned in the map
+      - event_id (UUID or None)
+      - home_team_id (UUID or None)
+      - away_team_id (UUID or None)
+      - played_at, home_score, away_score, status (any/optional)
+    """
+    if not rows:
+        return {}
+
+    out: dict[str, str] = {}
+    for row in rows:
+        marker = row.pop("source_marker")
+        # We treat (event_id, home_team_id, away_team_id, played_at) as the
+        # de-facto natural key — re-running the scraper for the same source
+        # row should reuse the same UUID rather than insert a duplicate.
+        q = client.table("games").select("id")
+        for col in ("event_id", "home_team_id", "away_team_id", "played_at"):
+            v = row.get(col)
+            if v is None:
+                q = q.is_(col, "null")
+            else:
+                q = q.eq(col, v)
+        result = _execute(q.maybe_single())
+        data = _data(result)
+        if data:
+            game_id = data["id"]
+            # Patch score/status if they were unknown when the row was first
+            # inserted (forfeit/postponed/etc. resolves over time).
+            patch = {k: row[k] for k in ("home_score", "away_score", "status") if row.get(k) is not None}
+            if patch:
+                _execute(client.table("games").update(patch).eq("id", game_id))
+        else:
+            insert = _execute(client.table("games").insert(row))
+            game_id = insert.data[0]["id"]
+        out[marker] = game_id
+    logger.info("Upserted %d games", len(out))
+    return out
+
+
+def upsert_box_scores(client: Client, rows: list[dict[str, Any]]) -> None:
+    """
+    Upsert box-score rows. Each row must already have resolved DB UUIDs in
+    game_id / player_id / team_id; the unique constraint is (game_id, player_id).
+    """
+    if not rows:
+        return
+    # Chunk to keep request bodies reasonable; 4k rows in one upsert is too big.
+    BATCH = 500
+    for i in range(0, len(rows), BATCH):
+        chunk = rows[i:i + BATCH]
+        _execute(client.table("box_scores").upsert(chunk, on_conflict="game_id,player_id"))
+    logger.info("Upserted %d box score rows", len(rows))
 
 
 def patch_player_bio_nulls(client: Client, player_id: str, bio: dict[str, Any]) -> None:

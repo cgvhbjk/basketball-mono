@@ -18,14 +18,25 @@ from .config import settings
 from .base_fetcher import EmptyPageError, BlockedError
 from .httpx_fetcher import HttpxFetcher
 from .playwright_fetcher import PlaywrightFetcher
-from .upsert import get_circuit_id, get_or_create_team, get_or_create_player, upsert_rows, patch_player_bio_nulls
+from .snapshots import Snapshotter
+from .upsert import (
+    get_circuit_id,
+    get_or_create_event,
+    get_or_create_player,
+    get_or_create_team,
+    patch_player_bio_nulls,
+    upsert_box_scores,
+    upsert_games,
+    upsert_rows,
+)
 from .circuits.eybl import EYBLScraper
 from .circuits.eycl import EYCLScraper
 from .circuits.adidas_3ssb import Adidas3SSBScraper
 from .circuits.adidas_gold import AdidasGoldScraper
 from .circuits.uaa import UAAScraper
 from .circuits.uaa_rise import UAARiseScraper
-from .circuits.puma import PUMAScraper
+from .circuits.hoop_group import HoopGroupScraper
+from .circuits.made_hoops import MadeHoopsScraper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,7 +48,9 @@ REGISTRY = {
     "adidas_gold": AdidasGoldScraper,
     "uaa":         UAAScraper,
     "uaa_rise":    UAARiseScraper,
-    "puma":        PUMAScraper,
+    # Scaffolded adapters — implementations pending source discovery.
+    "hoop_group":  HoopGroupScraper,
+    "made_hoops":  MadeHoopsScraper,
 }
 
 _CHECKPOINT_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -67,11 +80,16 @@ async def main() -> None:
 
     supabase = create_client(settings.supabase_url, settings.supabase_service_key)
 
+    # Snapshotter captures every fetched HTML/JSON body keyed by adapter name +
+    # sha256 so we can replay parsers against historical data even after a
+    # source changes its layout.
+    snapshotter = Snapshotter() if settings.enable_snapshots else None
+
     if settings.use_playwright:
-        fetcher = PlaywrightFetcher()
+        fetcher = PlaywrightFetcher(snapshotter=snapshotter, adapter_name=circuit_key)
         logger.info("USE_PLAYWRIGHT=true — using Playwright for all requests")
     else:
-        fetcher = HttpxFetcher()
+        fetcher = HttpxFetcher(snapshotter=snapshotter, adapter_name=circuit_key)
         logger.info("Trying httpx fetcher first (Playwright fallback enabled)")
 
     circuit_id_db = get_circuit_id(supabase, REGISTRY[circuit_key].circuit_name)
@@ -91,7 +109,7 @@ async def main() -> None:
                 raise
             logger.warning("httpx returned empty page — switching to Playwright. %s", e)
             await fetcher.close()
-            fetcher = PlaywrightFetcher()
+            fetcher = PlaywrightFetcher(snapshotter=snapshotter, adapter_name=circuit_key)
             scraper.fetcher = fetcher
             teams = await scraper.fetch_teams()
 
@@ -104,6 +122,8 @@ async def main() -> None:
                 "state": team.state,
                 "age_division": team.age_division,
                 "season": team.season,
+                "wins": team.wins,
+                "losses": team.losses,
             }
             team_id_map[team.source_id] = get_or_create_team(supabase, team_row)
 
@@ -138,6 +158,8 @@ async def main() -> None:
                         "hometown": player.hometown,
                         "high_school": player.high_school,
                         "position": player.position,
+                        "date_of_birth": player.date_of_birth.isoformat() if player.date_of_birth else None,
+                        "nationality": player.nationality,
                         "passport_id": player.source_id if store_passport else None,
                     }
                     db_player_id = get_or_create_player(supabase, player_row)
@@ -179,11 +201,20 @@ async def main() -> None:
                         "bpg": s.bpg,
                         "fg_pct": s.fg_pct,
                         "three_pt_pct": s.three_pt_pct,
+                        "ft_pct": s.ft_pct,
                         "fga": s.fga,
                         "oreb": s.oreb,
+                        "dreb": s.dreb,
                         "tpg": s.tpg,
                         "fta": s.fta,
                         "mpg": s.mpg,
+                        "fpg": s.fpg,
+                        "three_pm_pg": s.three_pm_pg,
+                        "three_pa_pg": s.three_pa_pg,
+                        "fgm_pg": s.fgm_pg,
+                        "ftm_pg": s.ftm_pg,
+                        "plus_minus": s.plus_minus,
+                        "events_played": s.events_played,
                     })
 
                 deduped_stats = list(
@@ -215,8 +246,96 @@ async def main() -> None:
                 logger.exception("Team %s (%s) failed — skipping: %s", team.name, team.source_id, exc)
                 continue
 
-        logger.info("Done. Teams: %d | Roster entries: %d | Stat rows: %d",
-                    len(teams), total_roster, total_stats)
+        # ---- Optional: events / games / box scores ----
+        # Adapters that don't expose schedule data return empty lists, so this
+        # whole pass is a no-op for them. Skipped on Adidas, UAA, Prep Hoops
+        # (Prep Hoops will be wired in a follow-up since it carries games but
+        # not box scores).
+        event_count = game_count = box_count = 0
+        try:
+            events = await scraper.list_events()
+        except Exception as exc:
+            logger.warning("list_events() failed for %s: %s — skipping schedule pass", circuit_key, exc)
+            events = []
+
+        if events:
+            event_db_ids: dict[str, str] = {}
+            for ev in events:
+                ev_row = {
+                    "circuit_id": circuit_id_db,
+                    "name": ev.name,
+                    "season": settings.season,
+                    "location": ev.location,
+                    "start_date": ev.start_date.isoformat() if ev.start_date else None,
+                    "end_date": ev.end_date.isoformat() if ev.end_date else None,
+                }
+                event_db_ids[ev.source_id] = get_or_create_event(supabase, ev_row)
+            event_count = len(event_db_ids)
+            logger.info("Upserted %d events", event_count)
+
+            game_db_ids: dict[str, str] = {}
+            for ev_source_id, ev_db_id in event_db_ids.items():
+                games = await scraper.list_games(ev_source_id)
+                rows: list[dict] = []
+                for g in games:
+                    rows.append({
+                        "source_marker": g.source_id,
+                        "event_id": ev_db_id,
+                        "home_team_id": team_id_map.get(g.source_home_team_id) if g.source_home_team_id else None,
+                        "away_team_id": team_id_map.get(g.source_away_team_id) if g.source_away_team_id else None,
+                        "played_at": g.played_at.isoformat() if g.played_at else None,
+                        "home_score": g.home_score,
+                        "away_score": g.away_score,
+                        "status": g.status,
+                    })
+                # Skip rows where neither team resolves — box scores can't FK them.
+                rows = [r for r in rows if r["home_team_id"] or r["away_team_id"]]
+                game_db_ids.update(upsert_games(supabase, rows))
+            game_count = len(game_db_ids)
+
+            # Per-player box scores. Cerebro pulls these from cache (no extra
+            # network calls); other adapters with get_player_box_scores
+            # implementations will fetch fresh.
+            box_rows: list[dict] = []
+            for player_source_id, db_player_id in player_id_map.items():
+                try:
+                    boxes = await scraper.get_player_box_scores(player_source_id)
+                except Exception as exc:
+                    logger.warning("get_player_box_scores(%s) failed: %s", player_source_id, exc)
+                    continue
+                for b in boxes:
+                    db_game_id = game_db_ids.get(b.source_game_id)
+                    db_team_id = team_id_map.get(b.source_team_id)
+                    if not db_game_id or not db_team_id:
+                        continue
+                    box_rows.append({
+                        "game_id": db_game_id,
+                        "player_id": db_player_id,
+                        "team_id": db_team_id,
+                        "minutes": b.minutes,
+                        "points": b.points,
+                        "rebounds": b.rebounds,
+                        "offensive_rebounds": b.offensive_rebounds,
+                        "defensive_rebounds": b.defensive_rebounds,
+                        "assists": b.assists,
+                        "steals": b.steals,
+                        "blocks": b.blocks,
+                        "turnovers": b.turnovers,
+                        "fouls": b.fouls,
+                        "fgm": b.fgm,
+                        "fga": b.fga,
+                        "three_pm": b.three_pm,
+                        "three_pa": b.three_pa,
+                        "ftm": b.ftm,
+                        "fta": b.fta,
+                    })
+            upsert_box_scores(supabase, box_rows)
+            box_count = len(box_rows)
+
+        logger.info(
+            "Done. Teams: %d | Roster entries: %d | Stat rows: %d | Events: %d | Games: %d | Box scores: %d",
+            len(teams), total_roster, total_stats, event_count, game_count, box_count,
+        )
 
         # Clear checkpoint on clean completion
         if os.path.exists(checkpoint_path):
@@ -227,6 +346,11 @@ async def main() -> None:
         raise
     finally:
         await fetcher.close()
+        # Keep the snapshot dir under its size cap so it doesn't grow without
+        # bound across many runs. No-op when snapshots are disabled or the
+        # cap is set to 0.
+        if snapshotter is not None:
+            snapshotter.prune()
 
 
 if __name__ == "__main__":

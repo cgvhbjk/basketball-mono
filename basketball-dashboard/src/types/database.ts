@@ -38,7 +38,6 @@ export interface Database {
 export interface Circuit {
   id: string
   name: string
-  gender: 'boys' | 'girls'
   org: string
   updated_at: string
 }

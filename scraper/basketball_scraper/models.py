@@ -1,8 +1,11 @@
 """
 Pydantic models for scraped basketball data.
+
 These are the scraper's internal representations — not 1:1 with DB columns.
+The men's pipeline is boys-only; do NOT add girls-specific fields here.
 """
 import re
+from datetime import date, datetime
 from typing import Literal, Optional
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -10,11 +13,9 @@ from pydantic import BaseModel, field_validator, model_validator
 AgeDivision = Literal["15U", "16U", "17U"]
 
 
-class CircuitRef(BaseModel):
-    name: str
-    org: str
-    gender: Literal["boys", "girls"]
-
+# ----------------------------------------------------------------
+# Core entities
+# ----------------------------------------------------------------
 
 class Team(BaseModel):
     source_id: str
@@ -23,6 +24,8 @@ class Team(BaseModel):
     state: Optional[str] = None
     age_division: AgeDivision
     season: int
+    wins: Optional[int] = None
+    losses: Optional[int] = None
 
 
 class RosterEntry(BaseModel):
@@ -46,6 +49,8 @@ class Player(BaseModel):
     star_rating: Optional[int] = None
     national_rank: Optional[int] = None
     state_rank: Optional[int] = None
+    date_of_birth: Optional[date] = None
+    nationality: Optional[str] = None
 
     @model_validator(mode="after")
     def normalize_height(self) -> "Player":
@@ -80,13 +85,22 @@ class SeasonStats(BaseModel):
     bpg: Optional[float] = None
     fg_pct: Optional[float] = None
     three_pt_pct: Optional[float] = None
+    ft_pct: Optional[float] = None
     fga: Optional[float] = None
     oreb: Optional[float] = None
+    dreb: Optional[float] = None
     tpg: Optional[float] = None
     fta: Optional[float] = None
     mpg: Optional[float] = None
+    fpg: Optional[float] = None
+    three_pm_pg: Optional[float] = None
+    three_pa_pg: Optional[float] = None
+    fgm_pg: Optional[float] = None
+    ftm_pg: Optional[float] = None
+    plus_minus: Optional[float] = None
+    events_played: Optional[int] = None
 
-    @field_validator("fg_pct", "three_pt_pct", mode="before")
+    @field_validator("fg_pct", "three_pt_pct", "ft_pct", mode="before")
     @classmethod
     def normalize_pct(cls, v: object) -> Optional[float]:
         """Accept either 0–1 or 0–100 format; store as 0–1."""
@@ -96,10 +110,59 @@ class SeasonStats(BaseModel):
         return val / 100 if val > 1 else val
 
 
+# ----------------------------------------------------------------
+# Event / game / box-score entities (new normalized schema)
+# Adapters that expose schedule data populate these in addition to the
+# season-aggregate stats above.
+# ----------------------------------------------------------------
+
+class Event(BaseModel):
+    source_id: str
+    circuit: str
+    name: str
+    location: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+
+
+class Game(BaseModel):
+    source_id: str
+    source_event_id: Optional[str] = None
+    source_home_team_id: Optional[str] = None
+    source_away_team_id: Optional[str] = None
+    home_team_name: Optional[str] = None
+    away_team_name: Optional[str] = None
+    home_score: Optional[int] = None
+    away_score: Optional[int] = None
+    played_at: Optional[datetime] = None
+    status: Optional[str] = None
+
+
+class BoxScore(BaseModel):
+    source_game_id: str
+    source_player_id: str
+    source_team_id: str
+    minutes: Optional[float] = None
+    points: Optional[int] = None
+    rebounds: Optional[int] = None
+    offensive_rebounds: Optional[int] = None
+    defensive_rebounds: Optional[int] = None
+    assists: Optional[int] = None
+    steals: Optional[int] = None
+    blocks: Optional[int] = None
+    turnovers: Optional[int] = None
+    fouls: Optional[int] = None
+    fgm: Optional[int] = None
+    fga: Optional[int] = None
+    three_pm: Optional[int] = None
+    three_pa: Optional[int] = None
+    ftm: Optional[int] = None
+    fta: Optional[int] = None
+
+
 def _parse_height(raw: str) -> Optional[int]:
     """Convert '6-3', '6'3"', '6 3', '75' to total inches."""
     raw = raw.strip()
-    # already pure inches
     if re.fullmatch(r"\d{2}", raw):
         return int(raw)
     m = re.match(r"(\d+)['\-\s](\d+)", raw)
