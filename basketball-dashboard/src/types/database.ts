@@ -32,6 +32,24 @@ export interface Database {
   }
 }
 
+export interface GlobalWatchlistRow {
+  id: string
+  player_id: string
+  scout_name: string
+  notes: string
+  status: string | null
+  starred_at: string
+  updated_at: string
+}
+
+export type GlobalWatchlistInsert = Omit<GlobalWatchlistRow, 'id' | 'starred_at' | 'updated_at'> & {
+  id?: string
+  starred_at?: string
+  updated_at?: string
+}
+
+export type GlobalWatchlistUpdate = Partial<GlobalWatchlistInsert>
+
 // ----------------------------------------------------------------
 // circuits
 // ----------------------------------------------------------------

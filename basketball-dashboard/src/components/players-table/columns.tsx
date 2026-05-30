@@ -104,6 +104,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       cell: ({ row }) => <StarCell playerId={row.original.player_id} />,
       enableSorting: false,
       enableGlobalFilter: false,
+      enableHiding: false,
     },
     {
       id: "player_name",
@@ -113,6 +114,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
         <span className="font-medium whitespace-nowrap">{getValue() as string}</span>
       ),
       enableGlobalFilter: true,
+      meta: { label: "Player" },
     },
     {
       id: "national_rank",
@@ -123,6 +125,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
         return v ? <span className="text-blue-600 font-medium">#{v}</span> : "—";
       },
       sortingFn: "basic",
+      meta: { label: "National rank" },
     },
     {
       id: "state_rank",
@@ -133,6 +136,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
         return v ? <span className="text-blue-500">#{v}</span> : "—";
       },
       sortingFn: "basic",
+      meta: { label: "State rank" },
     },
     {
       id: "star_rating",
@@ -145,6 +149,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       ),
       sortingFn: "basic",
       sortDescFirst: true,
+      meta: { label: "Stars" },
     },
     {
       id: "position",
@@ -153,6 +158,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       cell: ({ getValue }) => (
         <span className="text-gray-500 font-mono text-xs">{getValue() as string}</span>
       ),
+      meta: { label: "Position" },
     },
     {
       id: "circuit",
@@ -162,6 +168,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
         <span className="text-gray-600 whitespace-nowrap">{getValue() as string}</span>
       ),
       enableGlobalFilter: true,
+      meta: { label: "Circuit" },
     },
     {
       id: "team",
@@ -171,12 +178,14 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
         <span className="whitespace-nowrap">{getValue() as string}</span>
       ),
       enableGlobalFilter: true,
+      meta: { label: "Team" },
     },
     {
       id: "grad_year",
       accessorFn: (row) => row.players?.grad_year,
       header: ({ column }) => <SortHeader column={column} label="Grad" />,
       cell: ({ getValue }) => getValue() ?? "—",
+      meta: { label: "Grad year" },
     },
     {
       id: "height",
@@ -184,6 +193,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       header: ({ column }) => <SortHeader column={column} label="Ht" />,
       cell: ({ getValue }) => fmtHeight(getValue() as number | null),
       sortingFn: "basic",
+      meta: { label: "Height" },
     },
     {
       id: "games_played",
@@ -191,6 +201,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       header: ({ column }) => <SortHeader column={column} label="GP" />,
       cell: ({ getValue }) => (getValue() as number | undefined) ?? "—",
       sortUndefined: "last",
+      meta: { label: "Games played" },
     },
     {
       id: "ppg",
@@ -200,6 +211,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "PPG" },
     },
     {
       id: "rpg",
@@ -209,6 +221,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "RPG" },
     },
     {
       id: "apg",
@@ -218,6 +231,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "APG" },
     },
     {
       id: "spg",
@@ -227,6 +241,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "SPG" },
     },
     {
       id: "bpg",
@@ -236,6 +251,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "BPG" },
     },
     {
       id: "fga",
@@ -245,6 +261,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "FGA" },
     },
     {
       id: "tpg",
@@ -254,6 +271,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: false,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "Turnovers" },
     },
     {
       id: "fta",
@@ -263,6 +281,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "FTA" },
     },
     {
       id: "mpg",
@@ -271,6 +290,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       cell: ({ getValue }) => fmtStat((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
+      meta: { label: "Minutes" },
     },
     {
       id: "fg_pct",
@@ -279,6 +299,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
+      meta: { label: "FG%" },
     },
     {
       id: "three_pt_pct",
@@ -287,6 +308,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
+      meta: { label: "3P%" },
     },
     {
       id: "eff",
@@ -315,6 +337,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
+      meta: { label: "Efficiency" },
     },
   ];
 }

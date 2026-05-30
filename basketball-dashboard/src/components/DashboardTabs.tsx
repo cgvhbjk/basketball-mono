@@ -5,6 +5,8 @@ import type { PlayerStatsRow } from "@/types/database";
 import { DataTable } from "@/components/players-table/data-table";
 import { WatchlistTab } from "@/components/watchlist/WatchlistTab";
 import { useWatchlist } from "@/hooks/useWatchlist";
+import { useGlobalWatchlist } from "@/hooks/useGlobalWatchlist";
+import { useScoutName } from "@/hooks/useScoutName";
 import { StarredContext } from "@/components/players-table/StarredContext";
 
 interface DashboardTabsProps {
@@ -17,10 +19,19 @@ type ActiveTab = "players" | "watchlist";
 export function DashboardTabs({ data, seasons }: DashboardTabsProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("players");
   const watchlist = useWatchlist();
+  const scout = useScoutName();
+  const global = useGlobalWatchlist(scout.scoutName);
   const ctxValue = useMemo(
     () => ({ starred: watchlist.starred, toggleStar: watchlist.toggleStar }),
     [watchlist.starred, watchlist.toggleStar],
   );
+
+  const localCount = watchlist.starred.size;
+  const globalCount = global.starred.size;
+  const watchlistLabel =
+    localCount > 0 || globalCount > 0
+      ? `Watchlist (${localCount} | ${globalCount})`
+      : "Watchlist";
 
   return (
     <StarredContext.Provider value={ctxValue}>
@@ -32,7 +43,7 @@ export function DashboardTabs({ data, seasons }: DashboardTabsProps) {
             onClick={() => setActiveTab("players")}
           />
           <TabButton
-            label={watchlist.starred.size > 0 ? `Watchlist (${watchlist.starred.size})` : "Watchlist"}
+            label={watchlistLabel}
             active={activeTab === "watchlist"}
             onClick={() => setActiveTab("watchlist")}
           />
@@ -51,6 +62,9 @@ export function DashboardTabs({ data, seasons }: DashboardTabsProps) {
               setNotes={watchlist.setNotes}
               setStatus={watchlist.setStatus}
               addStatusOption={watchlist.addStatusOption}
+              toggleStar={watchlist.toggleStar}
+              scout={scout}
+              global={global}
             />
           )}
         </div>

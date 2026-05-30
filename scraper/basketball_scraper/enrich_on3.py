@@ -16,9 +16,11 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, BrowserContext
 from playwright_stealth import Stealth
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://www.on3.com/rivals/search/?searchText={query}"
 REQUEST_DELAY = 2.0  # seconds between requests (used by callers)
+_HTTPX_TIMEOUT = 20.0
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -111,15 +114,32 @@ class On3Enricher:
             raise RuntimeError("On3Enricher must be used as an async context manager")
         query = f"{first}+{last}"
         url = SEARCH_URL.format(query=query)
-        html = await self._fetch(url)
+
+        # On3 ships __NEXT_DATA__ inline on SSR, so the fast path is plain
+        # httpx — Playwright was getting Cloudflare-flagged in production and
+        # returning shells without the JSON payload. Fall back to a real
+        # browser only if httpx returns empty / non-JSON HTML.
+        html = await _fetch_httpx(url)
+        source = "httpx"
+        if not _has_next_data(html):
+            logger.info("On3 httpx empty for %s %s — falling back to Playwright", first, last)
+            html = await self._fetch_playwright(url)
+            source = "playwright"
+
         if not html:
+            logger.info("On3 fetch failed for %s %s (source=%s)", first, last, source)
             return None
+        if not _has_next_data(html):
+            logger.info("On3 no __NEXT_DATA__ for %s %s (source=%s, len=%d)",
+                        first, last, source, len(html))
+            return None
+
         profile = _parse_search_results(html, first, last)
         if profile is None:
-            logger.info("On3: no match for %s %s", first, last)
+            logger.info("On3: no match for %s %s (source=%s)", first, last, source)
         return profile
 
-    async def _fetch(self, url: str) -> Optional[str]:
+    async def _fetch_playwright(self, url: str) -> Optional[str]:
         assert self._context is not None
         page = await self._context.new_page()
         try:
@@ -128,10 +148,32 @@ class On3Enricher:
             await asyncio.sleep(3.0)
             return await page.content()
         except Exception as exc:
-            logger.warning("On3 fetch failed %s: %s", url, exc)
+            logger.warning("On3 playwright fetch failed %s: %s", url, exc)
             return None
         finally:
             await page.close()
+
+
+async def _fetch_httpx(url: str) -> Optional[str]:
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_HTTPX_TIMEOUT, follow_redirects=True) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code != 200:
+                logger.info("On3 httpx %s -> %d", url, r.status_code)
+                return None
+            return r.text
+    except Exception as exc:
+        logger.warning("On3 httpx fetch failed %s: %s", url, exc)
+        return None
+
+
+def _has_next_data(html: Optional[str]) -> bool:
+    return bool(html) and "__NEXT_DATA__" in html
 
 
 async def lookup_player_profile(first: str, last: str) -> Optional[On3Profile]:
@@ -144,11 +186,19 @@ async def lookup_player_profile(first: str, last: str) -> Optional[On3Profile]:
 # Parsers
 # ----------------------------------------------------------------
 
+def _ascii_fold(s: str) -> str:
+    """Lowercase + drop diacritics so 'José' matches 'Jose'."""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s)
+        if not unicodedata.combining(c)
+    ).lower()
+
+
 def _name_matches(text: str, first: str, last: str) -> bool:
     if len(first) < 2 or len(last) < 2:
         return False
-    t = text.lower()
-    return first.lower() in t and last.lower() in t
+    t = _ascii_fold(text)
+    return _ascii_fold(first) in t and _ascii_fold(last) in t
 
 
 def _parse_search_results(html: str, first: str, last: str) -> Optional[On3Profile]:
@@ -172,14 +222,41 @@ def _parse_search_results(html: str, first: str, last: str) -> Optional[On3Profi
     return profile
 
 
+def _profile_score(p: On3Profile) -> int:
+    """Rank candidate profiles by how much recruiting data they carry. Names
+    can resolve to multiple on3 records (e.g. LeBron James returns the pro
+    AND Bronny) — we want the one with star ratings and ranks, not the
+    elder with only a height. Higher is better."""
+    score = 0
+    if p.star_rating is not None:
+        score += 8
+    if p.national_rank is not None:
+        score += 4
+    if p.state_rank is not None:
+        score += 2
+    if p.grad_year is not None:
+        score += 4
+    if p.high_school:
+        score += 1
+    if p.height_inches is not None:
+        score += 1
+    if p.hometown:
+        score += 1
+    return score
+
+
 def _extract_from_next_data(data: Any, first: str, last: str) -> Optional[On3Profile]:
     candidates: list[dict] = []
     _collect_player_dicts(data, candidates, first, last)
+    best: Optional[On3Profile] = None
+    best_score = 0
     for obj in candidates:
         profile = _player_dict_to_profile(obj)
-        if any([profile.height_inches, profile.star_rating, profile.national_rank, profile.grad_year]):
-            return profile
-    return None
+        score = _profile_score(profile)
+        if score > best_score:
+            best = profile
+            best_score = score
+    return best
 
 
 def _collect_player_dicts(

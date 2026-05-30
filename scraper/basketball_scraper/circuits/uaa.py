@@ -68,7 +68,7 @@ class UAAScraper(BaseCircuit):
             url = f"{BASE_URL}/basketball/players?spid={roster_entry.source_player_id}&c={self._cohort()}"
             try:
                 bio_html = await self.fetcher.fetch_html(url)
-                _enrich_player_bio(bio_html, player)
+                _enrich_player_bio(bio_html, player, self.season)
             except Exception as exc:
                 logger.debug("Bio fetch failed for %s: %s", roster_entry.source_player_id, exc)
         return entries
@@ -86,10 +86,24 @@ _STID_RE = re.compile(r"stid=([a-f0-9]{24})")
 _SPID_RE = re.compile(r"spid=([a-f0-9]{24})")
 _JERSEY_RE = re.compile(r"^#(\d+)\s*(.*)")
 _HEIGHT_RE = re.compile(r"([4-8])['''](\d{1,2})")
-_GRAD_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
+_YEAR_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
+_GRAD_LABELS = ("class", "grad", "grad year", "graduation", "year")
 
 
-def _enrich_player_bio(html: str, player: Player) -> None:
+def _parse_grad(value: str, season: int) -> int | None:
+    """Extract a graduation year from a labeled field value. A U15/U16/U17
+    player can't have graduated in or before the season they played, so
+    anything ≤ season is rejected as bogus (usually the cohort year)."""
+    m = _YEAR_RE.search(value)
+    if not m:
+        return None
+    n = int(m.group(1))
+    if n <= season:
+        return None
+    return n
+
+
+def _enrich_player_bio(html: str, player: Player, season: int) -> None:
     """Parse height, position, grad year, high school from a UAA player profile page."""
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
@@ -101,16 +115,11 @@ def _enrich_player_bio(html: str, player: Player) -> None:
             if 48 <= h <= 108:
                 player.height_inches = h
 
-    if player.grad_year is None:
-        m = _GRAD_RE.search(text)
-        if m:
-            try:
-                player.grad_year = int(m.group(1))
-            except Exception:
-                pass
-
     # UA Next bio pages use <dl>/<dt>/<dd> or <th>/<td> pairs.
-    # Only match explicit paired elements to avoid reading unrelated page content.
+    # Only match explicit paired elements — a page-wide year regex would pick
+    # up the cohort label ("2025 boys") in the page chrome, not the player's
+    # actual grad year. If labels aren't present, leave grad_year null so the
+    # downstream enrichers (on3, 247) can fill it in.
     for dt in soup.find_all("dt"):
         dd = dt.find_next_sibling("dd")
         if not dd:
@@ -125,6 +134,10 @@ def _enrich_player_bio(html: str, player: Player) -> None:
             player.high_school = value
         if player.hometown is None and "hometown" in label:
             player.hometown = value
+        if player.grad_year is None and label in _GRAD_LABELS:
+            g = _parse_grad(value, season)
+            if g is not None:
+                player.grad_year = g
 
     for row in soup.find_all("tr"):
         cells = row.find_all(["th", "td"])
@@ -140,6 +153,10 @@ def _enrich_player_bio(html: str, player: Player) -> None:
             player.high_school = value
         if player.hometown is None and "hometown" in label:
             player.hometown = value
+        if player.grad_year is None and label in _GRAD_LABELS:
+            g = _parse_grad(value, season)
+            if g is not None:
+                player.grad_year = g
 
 
 def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:

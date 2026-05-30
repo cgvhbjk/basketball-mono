@@ -3,6 +3,8 @@
 import { Table } from "@tanstack/react-table";
 import { Search, Download } from "lucide-react";
 import type { PlayerStatsRow } from "@/types/database";
+import { ColumnVisibilityMenu } from "./column-visibility-menu";
+import { MinGamesSlider } from "./min-games-slider";
 
 interface ToolbarProps {
   table: Table<PlayerStatsRow>;
@@ -16,6 +18,9 @@ interface ToolbarProps {
   onDivisionChange: (v: string) => void;
   per40: boolean;
   onPer40Change: (v: boolean) => void;
+  minGP: number;
+  onMinGPChange: (v: number) => void;
+  gpMax: number;
 }
 
 function fmtHeight(inches: number | null): string {
@@ -101,6 +106,9 @@ export function Toolbar({
   onDivisionChange,
   per40,
   onPer40Change,
+  minGP,
+  onMinGPChange,
+  gpMax,
 }: ToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 pb-2">
@@ -155,6 +163,10 @@ export function Toolbar({
       <span className="ml-auto text-xs text-gray-400">
         {table.getFilteredRowModel().rows.length} players
       </span>
+
+      <MinGamesSlider value={minGP} onChange={onMinGPChange} max={gpMax} />
+
+      <ColumnVisibilityMenu table={table} />
 
       {/* Per 40 toggle */}
       <button
