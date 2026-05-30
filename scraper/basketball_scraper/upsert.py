@@ -55,12 +55,18 @@ def _data(result) -> dict | None:
 
 
 def get_or_create_team(client: Client, team_data: dict[str, Any]) -> str:
-    """Return existing team id or insert and return new id."""
+    """Return existing team id or insert and return new id.
+
+    Keyed on (circuit_id, name, age_division, season): a single program fields
+    separate 15U/16U/17U squads under the same name, so age_division must be
+    part of the identity or the squads collapse into one row.
+    """
     result = _execute(
         client.table("teams")
         .select("id")
         .eq("circuit_id", team_data["circuit_id"])
         .eq("name", team_data["name"])
+        .eq("age_division", team_data["age_division"])
         .eq("season", team_data["season"])
         .maybe_single()
     )

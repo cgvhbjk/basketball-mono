@@ -13,6 +13,7 @@ computed by dividing each counting stat by GP.
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import re
 from bs4 import BeautifulSoup
 
@@ -37,10 +38,21 @@ class UAAScraper(BaseCircuit):
     def _cohort(self) -> str:
         return f"{self.season}boys"
 
+    def _wait_for(self, selector: str | None) -> None:
+        """Tell a Playwright fetcher to wait for this content marker before
+        reading the page — rides through the JS bot-challenge that otherwise
+        yields an empty shell. No-op for the httpx fetcher."""
+        setter = getattr(self.fetcher, "set_wait_selector", None)
+        if setter:
+            setter(selector)
+
     async def _get_team_html(self, stid: str) -> str:
         if stid not in self._team_html:
             await asyncio.sleep(0.5)
             url = f"{BASE_URL}/basketball/teams?stid={stid}&c={self._cohort()}"
+            # Team pages list players via spid links; wait for those so we don't
+            # parse the challenge shell.
+            self._wait_for('a[href*="spid="]')
             try:
                 html = await self.fetcher.fetch_html(url)
             except EmptyPageError:
@@ -49,6 +61,7 @@ class UAAScraper(BaseCircuit):
                     logger.info("UAA team pages are JS-rendered — switching fetcher to Playwright")
                     await self.fetcher.close()
                     self.fetcher = PlaywrightFetcher()
+                self._wait_for('a[href*="spid="]')
                 html = await self.fetcher.fetch_html(url)
             self._team_html[stid] = html
         return self._team_html[stid]
@@ -56,12 +69,19 @@ class UAAScraper(BaseCircuit):
     async def fetch_teams(self) -> list[Team]:
         url = f"{BASE_URL}{self._HUB_PATH}"
         logger.info("Fetching %s teams from %s", self.circuit_name, url)
+        # Hub lists teams via stid links — wait for them past the challenge.
+        self._wait_for('a[href*="stid="]')
         html = await self.fetcher.fetch_html(url)
         return _parse_teams(html, self.season, self.age_division)
 
     async def fetch_roster(self, team: Team) -> list[tuple[Player, RosterEntry]]:
         html = await self._get_team_html(team.source_id)
         entries = _parse_roster(html, team.source_id)
+        # Per-player bio pages are one extra JS-rendered fetch each — the slow
+        # part of a UAA run. They only fill grad_year/height/position/hometown,
+        # so SCRAPER_SKIP_BIOS=1 skips them when only teams/rosters/stats matter.
+        if os.getenv("SCRAPER_SKIP_BIOS") == "1":
+            return entries
         # Enrich each player with bio data from their individual profile page
         for player, roster_entry in entries:
             await asyncio.sleep(0.3)
@@ -75,7 +95,9 @@ class UAAScraper(BaseCircuit):
 
     async def fetch_stats(self, team: Team) -> list[SeasonStats]:
         html = await self._get_team_html(team.source_id)
-        return _parse_stats(html, team.source_id, self.season, self.age_division)
+        # Use the team's own division (parsed from the hub heading), not the
+        # run-config default — a program fields separate 15U/16U/17U squads.
+        return _parse_stats(html, team.source_id, self.season, team.age_division)
 
 
 # ----------------------------------------------------------------
@@ -84,6 +106,10 @@ class UAAScraper(BaseCircuit):
 
 _STID_RE = re.compile(r"stid=([a-f0-9]{24})")
 _SPID_RE = re.compile(r"spid=([a-f0-9]{24})")
+# Hub groups teams under headings like "Boys 17U" / "Boys 16U" / "Boys 15U".
+# A single program (e.g. B. Maze Elite) appears once per division with a
+# distinct stid, so the division must come from the heading, not run config.
+_DIVISION_HEADING_RE = re.compile(r"Boys\s*(1[567]U)", re.I)
 _JERSEY_RE = re.compile(r"^#(\d+)\s*(.*)")
 _HEIGHT_RE = re.compile(r"([4-8])['''](\d{1,2})")
 _YEAR_RE = re.compile(r"\b(20(?:2[4-9]|3[0-2]))\b")
@@ -160,6 +186,10 @@ def _enrich_player_bio(html: str, player: Player, season: int) -> None:
 
 
 def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:
+    """Parse all teams from the hub, tagging each with the division of the
+    "Boys NNU" heading it appears under. `age_division` is only a fallback for
+    links that precede any heading (page chrome). Each squad has its own stid,
+    so divisions of the same program stay distinct."""
     soup = BeautifulSoup(html, "html.parser")
     teams: list[Team] = []
     seen: set[str] = set()
@@ -174,8 +204,17 @@ def _parse_teams(html: str, season: int, age_division: str) -> list[Team]:
         name = link.get_text(strip=True)
         if not name:
             continue
-        teams.append(Team(source_id=stid, name=name, age_division=age_division, season=season))
-    logger.info("Parsed %d %s teams", len(teams), "UAA")
+        heading = link.find_previous(string=_DIVISION_HEADING_RE)
+        division = (
+            _DIVISION_HEADING_RE.search(heading).group(1).upper()
+            if heading
+            else age_division
+        )
+        teams.append(Team(source_id=stid, name=name, age_division=division, season=season))
+    by_div: dict[str, int] = {}
+    for t in teams:
+        by_div[t.age_division] = by_div.get(t.age_division, 0) + 1
+    logger.info("Parsed %d UAA teams by division: %s", len(teams), by_div)
     return teams
 
 

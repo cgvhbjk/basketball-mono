@@ -6,7 +6,7 @@ hidden JSON endpoints and promote them to HttpxFetcher (the JSON-first path).
 """
 from __future__ import annotations
 import logging
-from playwright.async_api import async_playwright, Page, Request
+from playwright.async_api import async_playwright, Page, Request, Error as PWError
 
 from .base_fetcher import BaseFetcher, BlockedError
 from .reliability import with_retries
@@ -34,6 +34,13 @@ class PlaywrightFetcher(BaseFetcher):
         self._timeout_ms = timeout_ms
         self._playwright = None
         self._browser = None
+        # When set, wait for this CSS selector to appear before reading content.
+        # Lets callers ride through a JS bot-challenge that 202s a placeholder
+        # shell and only renders real markup (e.g. roster links) once it passes.
+        self._wait_selector: str | None = None
+
+    def set_wait_selector(self, selector: str | None) -> None:
+        self._wait_selector = selector
 
     async def _ensure_browser(self) -> None:
         if self._browser is None:
@@ -56,7 +63,40 @@ class PlaywrightFetcher(BaseFetcher):
 
             try:
                 response = await page.goto(url, wait_until=self._wait_until, timeout=self._timeout_ms)
-                html = await page.content()
+                # SPA / CDN-challenge sites (e.g. UA Next, which 202s then runs a
+                # JS challenge that re-navigates) keep changing the page after
+                # domcontentloaded, so content() races with an in-flight
+                # navigation ("page is navigating and changing the content").
+                # Let the network settle, then poll content() across navigations
+                # until the frame is stable. networkidle can legitimately time
+                # out on keepalive/long-poll pages, so that failure is non-fatal.
+                # Prefer waiting on the real content marker: it rides through
+                # the bot-challenge shell and means we can read immediately.
+                # Fall back to networkidle only when no selector is given —
+                # UA Next pings analytics on a keepalive, so networkidle never
+                # settles and would burn the full timeout on every page.
+                if self._wait_selector:
+                    try:
+                        await page.wait_for_selector(self._wait_selector, timeout=self._timeout_ms)
+                    except PWError:
+                        pass  # genuinely-empty page (e.g. team with no roster) — proceed
+                else:
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=self._timeout_ms)
+                    except PWError:
+                        pass
+                html = None
+                for _ in range(6):
+                    try:
+                        html = await page.content()
+                        break
+                    except PWError:
+                        try:
+                            await page.wait_for_load_state("load", timeout=5_000)
+                        except PWError:
+                            await page.wait_for_timeout(1_000)
+                if html is None:
+                    html = await page.content()  # final try — let it raise if still racing
             finally:
                 await context.close()
 
@@ -68,7 +108,6 @@ class PlaywrightFetcher(BaseFetcher):
 
         # Playwright errors are usually transient (timeouts, navigation aborts).
         # CDN blocks raise BlockedError — never retry those.
-        from playwright.async_api import Error as PWError
         return await with_retries(
             _do,
             retries=2,
