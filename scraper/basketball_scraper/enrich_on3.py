@@ -55,6 +55,16 @@ _RANK_RE = re.compile(r"#(\d+)")
 _STARS_RE = re.compile(r"\b([1-5])-star\b", re.I)
 _PROFILE_HREF_RE = re.compile(r"/(?:player|db|recruit)/[a-z0-9\-]+/?", re.I)
 
+# On3's search index spans every sport and every era. Our DB is current
+# high-school basketball recruits, so a bare name match happily grabs a
+# retired NBA player (LaMarcus Aldridge), a football Edge prospect, or a
+# 2002-class namesake — and _profile_score then *prefers* those because
+# established players carry the richest bios. Gate every candidate on
+# sport == basketball AND a current-ish class year before it's even a
+# contender.
+_MIN_GRAD_YEAR = 2024
+_MAX_GRAD_YEAR = 2035
+
 
 class On3Enricher:
     """
@@ -109,7 +119,9 @@ class On3Enricher:
     async def __aexit__(self, *_: Any) -> None:
         await self._cleanup()
 
-    async def lookup(self, first: str, last: str) -> Optional[On3Profile]:
+    async def lookup(
+        self, first: str, last: str, grad_year: Optional[int] = None
+    ) -> Optional[On3Profile]:
         if self._context is None:
             raise RuntimeError("On3Enricher must be used as an async context manager")
         query = f"{first}+{last}"
@@ -134,7 +146,7 @@ class On3Enricher:
                         first, last, source, len(html))
             return None
 
-        profile = _parse_search_results(html, first, last)
+        profile = _parse_search_results(html, first, last, grad_year)
         if profile is None:
             logger.info("On3: no match for %s %s (source=%s)", first, last, source)
         return profile
@@ -176,10 +188,40 @@ def _has_next_data(html: Optional[str]) -> bool:
     return bool(html) and "__NEXT_DATA__" in html
 
 
-async def lookup_player_profile(first: str, last: str) -> Optional[On3Profile]:
+async def lookup_player_profile(
+    first: str, last: str, grad_year: Optional[int] = None
+) -> Optional[On3Profile]:
     """Standalone lookup — creates a fresh browser per call. Use On3Enricher for batches."""
     async with On3Enricher() as enricher:
-        return await enricher.lookup(first, last)
+        return await enricher.lookup(first, last, grad_year)
+
+
+def _candidate_grad_year(obj: dict) -> Optional[int]:
+    """Read a plausible class/grad year off a search-result dict, if present."""
+    for key in ("classYear", "gradYear", "graduationYear", "year"):
+        val = obj.get(key)
+        if isinstance(val, bool):  # bool is an int subclass — skip
+            continue
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str) and val.strip().isdigit():
+            return int(val.strip())
+    return None
+
+
+def _is_basketball_recruit(obj: dict) -> bool:
+    """True only for current-era basketball players. On3 search results carry
+    a `sport` dict and a `classYear`; both must say 'a basketball recruit
+    graduating in the current window' or this is a wrong-sport / wrong-era
+    namesake we must not match."""
+    sport = obj.get("sport")
+    sport_name = sport.get("name") if isinstance(sport, dict) else sport
+    if not isinstance(sport_name, str) or sport_name.strip().lower() != "basketball":
+        return False
+    gy = _candidate_grad_year(obj)
+    if gy is None or not (_MIN_GRAD_YEAR <= gy <= _MAX_GRAD_YEAR):
+        return False
+    return True
 
 
 # ----------------------------------------------------------------
@@ -201,7 +243,9 @@ def _name_matches(text: str, first: str, last: str) -> bool:
     return _ascii_fold(first) in t and _ascii_fold(last) in t
 
 
-def _parse_search_results(html: str, first: str, last: str) -> Optional[On3Profile]:
+def _parse_search_results(
+    html: str, first: str, last: str, grad_year: Optional[int] = None
+) -> Optional[On3Profile]:
     soup = BeautifulSoup(html, "html.parser")
 
     # 1. Try Next.js __NEXT_DATA__ — most reliable since it's structured JSON
@@ -209,7 +253,7 @@ def _parse_search_results(html: str, first: str, last: str) -> Optional[On3Profi
     if script and script.string:
         try:
             data = json.loads(script.string)
-            profile = _extract_from_next_data(data, first, last)
+            profile = _extract_from_next_data(data, first, last, grad_year)
             if profile is not None:
                 return profile
         except Exception as exc:
@@ -245,14 +289,21 @@ def _profile_score(p: On3Profile) -> int:
     return score
 
 
-def _extract_from_next_data(data: Any, first: str, last: str) -> Optional[On3Profile]:
+def _extract_from_next_data(
+    data: Any, first: str, last: str, grad_year: Optional[int] = None
+) -> Optional[On3Profile]:
     candidates: list[dict] = []
     _collect_player_dicts(data, candidates, first, last)
     best: Optional[On3Profile] = None
-    best_score = 0
+    best_score = -1
     for obj in candidates:
         profile = _player_dict_to_profile(obj)
         score = _profile_score(profile)
+        # When the DB knows the player's class, prefer the candidate whose
+        # On3 class year matches it — disambiguates same-name same-sport kids
+        # across recruiting years (e.g. the 2025 vs 2020 Cameron Boozer rows).
+        if grad_year is not None and _candidate_grad_year(obj) == grad_year:
+            score += 20
         if score > best_score:
             best = profile
             best_score = score
@@ -269,7 +320,9 @@ def _collect_player_dicts(
             str(node.get(f, ""))
             for f in ("name", "playerName", "fullName", "firstName", "lastName")
         )
-        if _name_matches(name_vals, first, last):
+        # Name match alone is not enough — only a current basketball recruit is
+        # a valid candidate, else namesakes from other sports/eras win.
+        if _name_matches(name_vals, first, last) and _is_basketball_recruit(node):
             out.append(node)
         for v in node.values():
             _collect_player_dicts(v, out, first, last, depth + 1)
