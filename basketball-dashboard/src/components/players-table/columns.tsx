@@ -1,9 +1,10 @@
 "use client";
 
-import { ColumnDef, SortingFn } from "@tanstack/react-table";
-import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { ColumnDef, SortingFn, FilterFn } from "@tanstack/react-table";
 import type { PlayerStatsRow } from "@/types/database";
 import { useStarred } from "./StarredContext";
+import { ColumnHeader } from "./column-header";
+import { normalizePosition } from "@/lib/positions";
 
 function StarCell({ playerId }: { playerId: string }) {
   const { starred, toggleStar } = useStarred();
@@ -17,25 +18,6 @@ function StarCell({ playerId }: { playerId: string }) {
       title={isStarred ? "Remove from watchlist" : "Add to watchlist"}
     >
       {isStarred ? "★" : "☆"}
-    </button>
-  );
-}
-
-function SortHeader({ column, label }: { column: any; label: string }) {
-  const sorted = column.getIsSorted();
-  return (
-    <button
-      className="flex items-center gap-1 font-semibold hover:text-black"
-      onClick={() => column.toggleSorting(sorted === "asc")}
-    >
-      {label}
-      {sorted === "asc" ? (
-        <ArrowUp className="h-3 w-3" />
-      ) : sorted === "desc" ? (
-        <ArrowDown className="h-3 w-3" />
-      ) : (
-        <ArrowUpDown className="h-3 w-3 opacity-40" />
-      )}
     </button>
   );
 }
@@ -58,6 +40,14 @@ function fmtStat(val: number | null, decimals = 1): string {
 function fmtStars(rating: number | null): string {
   if (rating === null || rating === undefined) return "—";
   return "★".repeat(rating) + "☆".repeat(5 - rating);
+}
+
+// The team's `state` column is empty in the DB, so derive the player's state
+// from their hometown ("City, ST") to give the state rank its context.
+function stateFromHometown(hometown: string | null | undefined): string | null {
+  if (!hometown) return null;
+  const m = hometown.match(/,\s*([A-Za-z]{2})\s*$/);
+  return m ? m[1].toUpperCase() : null;
 }
 
 function p40(val: number | null, mpg: number | null, per40 = false, decimals = 1): string {
@@ -94,8 +84,49 @@ function num(v: number | null | undefined): number | undefined {
   return v ?? undefined;
 }
 
+// --- Column filters -------------------------------------------------------
+type NumRange = [number | undefined, number | undefined];
+
+function normNum(n: number | undefined): number | undefined {
+  return n === undefined || Number.isNaN(n) ? undefined : n;
+}
+
+function inRange(v: number, range: NumRange | undefined): boolean {
+  const min = normNum(range?.[0]);
+  const max = normNum(range?.[1]);
+  if (min !== undefined && v < min) return false;
+  if (max !== undefined && v > max) return false;
+  return true;
+}
+
+// Range filter that mirrors makePer40SortFn: it tests against the per-40 value
+// the user actually sees when per-40 mode is on, so the funnel matches the cell.
+function makePer40FilterFn(per40: boolean): FilterFn<PlayerStatsRow> {
+  return (row, columnId, value: NumRange) => {
+    const raw = row.getValue(columnId) as number | undefined;
+    if (raw === undefined || raw === null) return false;
+    const mpg = row.original.mpg;
+    const v = per40 && mpg ? (raw / mpg) * 40 : raw;
+    return inRange(v, value);
+  };
+}
+
+// Range filter for 0–1 fractions shown as percentages — inputs/hints are 0–100.
+const percentRangeFilter: FilterFn<PlayerStatsRow> = (row, columnId, value: NumRange) => {
+  const raw = row.getValue(columnId) as number | undefined;
+  if (raw === undefined || raw === null) return false;
+  return inRange(raw * 100, value);
+};
+
+// Multi-select: a row passes when its value is one of the checked options.
+const multiSelectFilter: FilterFn<PlayerStatsRow> = (row, columnId, value: string[]) => {
+  if (!value || value.length === 0) return true;
+  return value.includes(String(row.getValue(columnId)));
+};
+
 export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
   const per40Sort = makePer40SortFn(per40);
+  const per40Filter = makePer40FilterFn(per40);
   return [
     {
       id: "star",
@@ -109,7 +140,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
     {
       id: "player_name",
       accessorFn: (row) => `${row.players?.last_name}, ${row.players?.first_name}`,
-      header: ({ column }) => <SortHeader column={column} label="Player" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Player" />,
       cell: ({ getValue }) => (
         <span className="font-medium whitespace-nowrap">{getValue() as string}</span>
       ),
@@ -119,29 +150,41 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
     {
       id: "national_rank",
       accessorFn: (row) => row.players?.national_rank,
-      header: ({ column }) => <SortHeader column={column} label="Nat#" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Nat#" />,
       cell: ({ getValue }) => {
         const v = getValue() as number | null;
         return v ? <span className="text-blue-600 font-medium">#{v}</span> : "—";
       },
       sortingFn: "basic",
-      meta: { label: "National rank" },
+      filterFn: "inNumberRange",
+      meta: { label: "National rank", filterType: "range" },
     },
     {
       id: "state_rank",
       accessorFn: (row) => row.players?.state_rank,
-      header: ({ column }) => <SortHeader column={column} label="St#" />,
-      cell: ({ getValue }) => {
+      header: ({ column }) => <ColumnHeader column={column} label="St#" />,
+      cell: ({ getValue, row }) => {
         const v = getValue() as number | null;
-        return v ? <span className="text-blue-500">#{v}</span> : "—";
+        // Derive the state from hometown ("ranked within what?") — the team
+        // `state` field is empty in the DB, hometown is the populated source.
+        const st = stateFromHometown(row.original.players?.hometown);
+        return v ? (
+          <span className="text-blue-500 whitespace-nowrap">
+            #{v}
+            {st ? ` (${st})` : ""}
+          </span>
+        ) : (
+          "—"
+        );
       },
       sortingFn: "basic",
-      meta: { label: "State rank" },
+      filterFn: "inNumberRange",
+      meta: { label: "State rank", filterType: "range" },
     },
     {
       id: "star_rating",
       accessorFn: (row) => row.players?.star_rating,
-      header: ({ column }) => <SortHeader column={column} label="Stars" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Stars" />,
       cell: ({ getValue }) => (
         <span className="text-yellow-500 tracking-tight text-xs">
           {fmtStars(getValue() as number | null)}
@@ -149,21 +192,23 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       ),
       sortingFn: "basic",
       sortDescFirst: true,
-      meta: { label: "Stars" },
+      filterFn: "inNumberRange",
+      meta: { label: "Stars", filterType: "range" },
     },
     {
       id: "position",
-      accessorFn: (row) => row.players?.position ?? "—",
-      header: "Pos",
+      accessorFn: (row) => normalizePosition(row.players?.position),
+      header: ({ column }) => <ColumnHeader column={column} label="Pos" />,
       cell: ({ getValue }) => (
         <span className="text-gray-500 font-mono text-xs">{getValue() as string}</span>
       ),
-      meta: { label: "Position" },
+      filterFn: multiSelectFilter,
+      meta: { label: "Position", filterType: "category" },
     },
     {
       id: "circuit",
       accessorFn: (row) => row.teams?.circuits?.name ?? "—",
-      header: ({ column }) => <SortHeader column={column} label="Circuit" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Circuit" />,
       cell: ({ getValue }) => (
         <span className="text-gray-600 whitespace-nowrap">{getValue() as string}</span>
       ),
@@ -173,142 +218,157 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
     {
       id: "team",
       accessorFn: (row) => row.teams?.name ?? "—",
-      header: ({ column }) => <SortHeader column={column} label="Team" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Team" />,
       cell: ({ getValue }) => (
         <span className="whitespace-nowrap">{getValue() as string}</span>
       ),
       enableGlobalFilter: true,
-      meta: { label: "Team" },
+      filterFn: multiSelectFilter,
+      meta: { label: "Team", filterType: "category" },
     },
     {
       id: "grad_year",
       accessorFn: (row) => row.players?.grad_year,
-      header: ({ column }) => <SortHeader column={column} label="Grad" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Grad" />,
       cell: ({ getValue }) => getValue() ?? "—",
-      meta: { label: "Grad year" },
+      filterFn: "inNumberRange",
+      meta: { label: "Grad year", filterType: "range" },
     },
     {
       id: "height",
       accessorFn: (row) => row.players?.height_inches,
-      header: ({ column }) => <SortHeader column={column} label="Ht" />,
+      header: ({ column }) => <ColumnHeader column={column} label="Ht" />,
       cell: ({ getValue }) => fmtHeight(getValue() as number | null),
       sortingFn: "basic",
-      meta: { label: "Height" },
+      filterFn: "inNumberRange",
+      meta: { label: "Height", filterType: "range" },
     },
     {
       id: "games_played",
       accessorFn: (row) => num(row.games_played),
-      header: ({ column }) => <SortHeader column={column} label="GP" />,
+      header: ({ column }) => <ColumnHeader column={column} label="GP" />,
       cell: ({ getValue }) => (getValue() as number | undefined) ?? "—",
       sortUndefined: "last",
-      meta: { label: "Games played" },
+      filterFn: "inNumberRange",
+      meta: { label: "Games played", filterType: "range" },
     },
     {
       id: "ppg",
       accessorFn: (row) => num(row.ppg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "PTS/40" : "PPG"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "PTS/40" : "PPG"} />,
       cell: ({ row }) => p40(row.original.ppg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "PPG" },
+      filterFn: per40Filter,
+      meta: { label: "PPG", filterType: "range" },
     },
     {
       id: "rpg",
       accessorFn: (row) => num(row.rpg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "REB/40" : "RPG"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "REB/40" : "RPG"} />,
       cell: ({ row }) => p40(row.original.rpg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "RPG" },
+      filterFn: per40Filter,
+      meta: { label: "RPG", filterType: "range" },
     },
     {
       id: "apg",
       accessorFn: (row) => num(row.apg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "AST/40" : "APG"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "AST/40" : "APG"} />,
       cell: ({ row }) => p40(row.original.apg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "APG" },
+      filterFn: per40Filter,
+      meta: { label: "APG", filterType: "range" },
     },
     {
       id: "spg",
       accessorFn: (row) => num(row.spg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "STL/40" : "SPG"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "STL/40" : "SPG"} />,
       cell: ({ row }) => p40(row.original.spg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "SPG" },
+      filterFn: per40Filter,
+      meta: { label: "SPG", filterType: "range" },
     },
     {
       id: "bpg",
       accessorFn: (row) => num(row.bpg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "BLK/40" : "BPG"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "BLK/40" : "BPG"} />,
       cell: ({ row }) => p40(row.original.bpg, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "BPG" },
+      filterFn: per40Filter,
+      meta: { label: "BPG", filterType: "range" },
     },
     {
       id: "fga",
       accessorFn: (row) => num(row.fga),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "FGA/40" : "FGA"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "FGA/40" : "FGA"} />,
       cell: ({ row }) => p40(row.original.fga, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "FGA" },
+      filterFn: per40Filter,
+      meta: { label: "FGA", filterType: "range" },
     },
     {
       id: "tpg",
       accessorFn: (row) => num(row.tpg),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "TO/40" : "TO"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "TO/40" : "TO"} />,
       cell: ({ row }) => p40(row.original.tpg, row.original.mpg, per40),
       sortDescFirst: false,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "Turnovers" },
+      filterFn: per40Filter,
+      meta: { label: "Turnovers", filterType: "range" },
     },
     {
       id: "fta",
       accessorFn: (row) => num(row.fta),
-      header: ({ column }) => <SortHeader column={column} label={per40 ? "FTA/40" : "FTA"} />,
+      header: ({ column }) => <ColumnHeader column={column} label={per40 ? "FTA/40" : "FTA"} />,
       cell: ({ row }) => p40(row.original.fta, row.original.mpg, per40),
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "FTA" },
+      filterFn: per40Filter,
+      meta: { label: "FTA", filterType: "range" },
     },
     {
       id: "mpg",
       accessorFn: (row) => num(row.mpg),
-      header: ({ column }) => <SortHeader column={column} label="MIN" />,
+      header: ({ column }) => <ColumnHeader column={column} label="MIN" />,
       cell: ({ getValue }) => fmtStat((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
-      meta: { label: "Minutes" },
+      filterFn: "inNumberRange",
+      meta: { label: "Minutes", filterType: "range" },
     },
     {
       id: "fg_pct",
       accessorFn: (row) => num(row.fg_pct),
-      header: ({ column }) => <SortHeader column={column} label="FG%" />,
+      header: ({ column }) => <ColumnHeader column={column} label="FG%" />,
       cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
-      meta: { label: "FG%" },
+      filterFn: percentRangeFilter,
+      meta: { label: "FG%", filterType: "range", percent: true },
     },
     {
       id: "three_pt_pct",
       accessorFn: (row) => num(row.three_pt_pct),
-      header: ({ column }) => <SortHeader column={column} label="3P%" />,
+      header: ({ column }) => <ColumnHeader column={column} label="3P%" />,
       cell: ({ getValue }) => fmtPct((getValue() as number | undefined) ?? null),
       sortDescFirst: true,
       sortUndefined: "last",
-      meta: { label: "3P%" },
+      filterFn: percentRangeFilter,
+      meta: { label: "3P%", filterType: "range", percent: true },
     },
     {
       id: "eff",
@@ -325,7 +385,7 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
           (row.tpg ?? 0)
         );
       },
-      header: ({ column }) => <SortHeader column={column} label="EFF" />,
+      header: ({ column }) => <ColumnHeader column={column} label="EFF" />,
       cell: ({ row, getValue }) => {
         const v = getValue() as number | undefined;
         if (v === undefined) return "—";
@@ -337,7 +397,8 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       sortDescFirst: true,
       sortingFn: per40Sort,
       sortUndefined: "last",
-      meta: { label: "Efficiency" },
+      filterFn: per40Filter,
+      meta: { label: "Efficiency", filterType: "range" },
     },
   ];
 }

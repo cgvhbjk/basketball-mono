@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
   getFilteredRowModel,
   getPaginationRowModel,
+  getFacetedRowModel,
+  getFacetedUniqueValues,
+  getFacetedMinMaxValues,
   flexRender,
   SortingState,
   ColumnFiltersState,
@@ -16,11 +19,23 @@ import { createColumns } from "./columns";
 import { Toolbar } from "./toolbar";
 import { Pagination } from "./pagination";
 import { useColumnVisibility, HIDDEN_BY_DEFAULT } from "@/hooks/useColumnVisibility";
+import { useColumnOrder } from "@/hooks/useColumnOrder";
 import { useMinGamesPlayed } from "@/hooks/useMinGamesPlayed";
 
 interface DataTableProps {
   data: PlayerStatsRow[];
   seasons: number[];
+}
+
+// Move `fromId` to sit where `toId` currently is, preserving the rest.
+function reorder(order: string[], fromId: string, toId: string): string[] {
+  const from = order.indexOf(fromId);
+  const to = order.indexOf(toId);
+  if (from === -1 || to === -1 || from === to) return order;
+  const next = [...order];
+  next.splice(from, 1);
+  next.splice(to, 0, fromId);
+  return next;
 }
 
 export function DataTable({ data, seasons }: DataTableProps) {
@@ -101,18 +116,32 @@ export function DataTable({ data, seasons }: DataTableProps) {
   // array stays stable across star toggles — only the per40 toggle rebuilds it.
   const columns = useMemo(() => createColumns(per40), [per40]);
 
+  // Column order (drag-to-reorder), persisted. Ids are stable across the per40
+  // toggle, so the saved order survives it.
+  const columnIds = useMemo(() => columns.map((c) => c.id as string), [columns]);
+  const { order, setOrder } = useColumnOrder("basketball_columns_order_players", columnIds);
+
+  // Tracks the in-flight header drag (source id) and the current drop target
+  // for a light highlight. The star column is pinned and never participates.
+  const dragColId = useRef<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
   const table = useReactTable({
     data: filteredData,
     columns,
-    state: { sorting, globalFilter, columnFilters, columnVisibility: visibility },
+    state: { sorting, globalFilter, columnFilters, columnVisibility: visibility, columnOrder: order },
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setVisibility,
+    onColumnOrderChange: setOrder,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
+    getFacetedRowModel: getFacetedRowModel(),
+    getFacetedUniqueValues: getFacetedUniqueValues(),
+    getFacetedMinMaxValues: getFacetedMinMaxValues(),
     initialState: { pagination: { pageSize: 50 } },
     globalFilterFn: "includesString",
   });
@@ -141,16 +170,54 @@ export function DataTable({ data, seasons }: DataTableProps) {
           <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-300">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>
-                {hg.headers.map((header) => (
-                  <th
-                    key={header.id}
-                    className="px-2 py-1.5 text-left text-gray-600 font-semibold border-r border-gray-200 last:border-r-0 whitespace-nowrap select-none"
-                  >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </th>
-                ))}
+                {hg.headers.map((header) => {
+                  const colId = header.column.id;
+                  // The star column stays pinned first and is not reorderable.
+                  const movable = colId !== "star";
+                  return (
+                    <th
+                      key={header.id}
+                      draggable={movable}
+                      onDragStart={
+                        movable
+                          ? () => {
+                              dragColId.current = colId;
+                            }
+                          : undefined
+                      }
+                      onDragEnter={() => {
+                        if (movable && dragColId.current && dragColId.current !== colId) {
+                          setDragOverId(colId);
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        // Allow a drop only onto another movable column.
+                        if (movable && dragColId.current) e.preventDefault();
+                      }}
+                      onDragLeave={() => setDragOverId((o) => (o === colId ? null : o))}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const from = dragColId.current;
+                        dragColId.current = null;
+                        setDragOverId(null);
+                        if (from && movable && from !== colId) {
+                          setOrder((prev) => reorder(prev, from, colId));
+                        }
+                      }}
+                      onDragEnd={() => {
+                        dragColId.current = null;
+                        setDragOverId(null);
+                      }}
+                      className={`px-2 py-1.5 text-left text-gray-600 font-semibold border-r border-gray-200 last:border-r-0 whitespace-nowrap select-none ${
+                        movable ? "cursor-move" : ""
+                      } ${dragOverId === colId ? "bg-blue-100" : ""}`}
+                    >
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  );
+                })}
               </tr>
             ))}
           </thead>
