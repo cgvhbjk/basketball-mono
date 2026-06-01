@@ -26,6 +26,9 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # SUPABASE_URL / SUPABASE_SERVICE_KEY are stored as Production environment
+    # secrets, not repo-level secrets — the job must opt in or they resolve to "".
+    environment: Production
     defaults:
       run:
         working-directory: scraper
