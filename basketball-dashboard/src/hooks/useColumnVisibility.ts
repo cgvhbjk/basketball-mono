@@ -3,15 +3,15 @@
 import { useState, useEffect, useCallback } from "react";
 import type { VisibilityState, OnChangeFn } from "@tanstack/react-table";
 
-// Columns we currently have no live data for — start them hidden so the
-// table doesn't show a wall of em-dashes. Users can re-enable from the
-// column-visibility menu; their choice persists in localStorage.
+// Recruiting/bio enrichment (On3 / PrepHoops / 247) only covers ranked
+// prospects, so these columns are sparse for the long tail and start hidden to
+// avoid a wall of em-dashes. The two flagship recruiting columns the board
+// exists to surface — national rank and stars — start visible. Users can toggle
+// any of these from the column-visibility menu; their choice persists.
 export const HIDDEN_BY_DEFAULT: VisibilityState = {
   grad_year: false,
   height: false,
-  national_rank: false,
   state_rank: false,
-  star_rating: false,
 };
 
 export function useColumnVisibility(

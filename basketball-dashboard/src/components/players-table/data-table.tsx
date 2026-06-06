@@ -70,13 +70,19 @@ export function DataTable({ data, seasons }: DataTableProps) {
     if (selectedDivision) {
       rows = rows.filter((r) => r.age_division === selectedDivision);
     }
+    // Max GP available in the current scope — mirrors the slider's upper bound
+    // (computed before per40/minGP). Clamp the GP floor to it so a threshold
+    // carried over from a higher-GP season can't silently hide every row while
+    // the slider shows itself maxed out.
+    const scopeMax = rows.reduce((m, r) => Math.max(m, r.games_played ?? 0), 0);
     // In per-40 mode, rows without mpg can't be rate-adjusted — the cells would
     // all em-dash. Hide them outright rather than show a row of "—".
     if (per40) {
       rows = rows.filter((r) => r.mpg);
     }
-    if (minGP > 0) {
-      rows = rows.filter((r) => (r.games_played ?? 0) >= minGP);
+    const floor = Math.min(minGP, scopeMax);
+    if (floor > 0) {
+      rows = rows.filter((r) => (r.games_played ?? 0) >= floor);
     }
     return rows;
   }, [data, selectedCircuit, selectedSeason, selectedDivision, per40, minGP]);

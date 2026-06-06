@@ -256,8 +256,12 @@ export function WatchlistTab({
     if (selectedSeason) rows = rows.filter((r) => r.season === Number(selectedSeason));
     if (selectedCircuit) rows = rows.filter((r) => r.teams?.circuits?.name === selectedCircuit);
     if (selectedDivision) rows = rows.filter((r) => r.age_division === selectedDivision);
+    // Clamp the GP floor to the max GP in scope (mirrors the slider bound) so a
+    // threshold carried over from another season can't hide every starred row.
+    const scopeMax = rows.reduce((m, r) => Math.max(m, r.games_played ?? 0), 0);
     if (per40) rows = rows.filter((r) => r.mpg);
-    if (minGP > 0) rows = rows.filter((r) => (r.games_played ?? 0) >= minGP);
+    const floor = Math.min(minGP, scopeMax);
+    if (floor > 0) rows = rows.filter((r) => (r.games_played ?? 0) >= floor);
     return rows;
   }, [starredData, selectedSeason, selectedCircuit, selectedDivision, per40, minGP]);
 

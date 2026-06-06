@@ -1,13 +1,13 @@
 import { DashboardTabs } from "@/components/DashboardTabs";
-import { getPlayersWithStats, getAvailableSeasons } from "@/lib/queries/players";
+import { getPlayersWithStats } from "@/lib/queries/players";
 
 export const revalidate = 3600;
 
 export default async function HomePage() {
-  const [data, seasons] = await Promise.all([
-    getPlayersWithStats(),
-    getAvailableSeasons(),
-  ]);
+  const data = await getPlayersWithStats();
+  // Derive the season list from the full dataset we already loaded — avoids a
+  // second full-table scan and stays consistent with the rows actually shown.
+  const seasons = [...new Set(data.map((r) => r.season))].sort((a, b) => b - a);
 
   return (
     <main className="flex flex-col h-screen p-4 gap-2">

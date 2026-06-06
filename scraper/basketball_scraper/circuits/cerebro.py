@@ -600,15 +600,18 @@ def aggregate_per_game_stats(player_games: list[dict[str, Any]]) -> dict[str, Op
     out: dict[str, Optional[float]] = {v: None for v in _PER_GAME_OUT_KEYS.values()}
     if not player_games:
         return out
-    n = len(player_games)
     sums = {k: 0.0 for k in _PER_GAME_RAW_FIELDS}
-    have = {k: False for k in _PER_GAME_RAW_FIELDS}
+    counts = {k: 0 for k in _PER_GAME_RAW_FIELDS}
     for g in player_games:
         for k in _PER_GAME_RAW_FIELDS:
             v = g.get(k)
             if v is not None:
                 sums[k] += float(v)
-                have[k] = True
+                counts[k] += 1
+    # Average each field over the games that actually report it, not over the
+    # full game count. Dividing by every game would treat a missing (unreported)
+    # field as a recorded zero — understating derived per-game rates like mpg and
+    # in turn inflating the dashboard's per-40 conversion (stat / mpg × 40).
     for raw_key, out_key in _PER_GAME_OUT_KEYS.items():
-        out[out_key] = (sums[raw_key] / n) if have[raw_key] else None
+        out[out_key] = (sums[raw_key] / counts[raw_key]) if counts[raw_key] else None
     return out

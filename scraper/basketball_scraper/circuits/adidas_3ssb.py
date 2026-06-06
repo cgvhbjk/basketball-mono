@@ -50,6 +50,7 @@ import logging
 import os
 import re
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 
@@ -126,8 +127,9 @@ class Adidas3SSBScraper(BaseCircuit):
             "page": page,
             "limit": limit,
         }
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
-        url = f"{ADMIN_AJAX}?{qs}"
+        # urlencode so any value with a space/&/= (or a future param) is escaped
+        # rather than producing a malformed query; dict order is preserved.
+        url = f"{ADMIN_AJAX}?{urlencode(params)}"
         try:
             data = await self.fetcher.fetch_json(url)
         except Exception as exc:
