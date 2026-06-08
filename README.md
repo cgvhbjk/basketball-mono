@@ -10,17 +10,21 @@ Boys grassroots basketball stats scraper + dashboard. Scrapes player/team stats 
 basketball-mono/
 ├── scraper/                  # Python scraper
 │   ├── basketball_scraper/
-│   │   ├── circuits/         # One file per circuit (eybl.py, uaa.py, …)
-│   │   ├── main.py           # Entry point
+│   │   ├── circuits/         # One file per circuit (cerebro.py, eybl.py, uaa.py, …)
+│   │   ├── sources/sports247/# 247Sports extractor (separate CLI)
+│   │   ├── cli.py            # `python -m basketball_scraper ingest …`
+│   │   ├── main.py           # Orchestrator (teams→rosters→stats→events→box scores)
 │   │   ├── models.py         # Pydantic models
 │   │   ├── upsert.py         # Supabase write helpers
 │   │   └── config.py         # Settings (reads .env)
-│   ├── enrich_players.py     # Backfill 247/On3/Passport rankings
+│   ├── enrich_players.py     # Backfill 247/On3/Passport bio + ranks
+│   ├── scripts/             # enrich_prephoops.py + DB maintenance scripts
 │   └── requirements.txt
 ├── basketball-dashboard/     # Next.js 16 dashboard (deployed to Vercel)
 │   └── src/
 │       ├── app/page.tsx
-│       ├── components/players-table/
+│       ├── components/players-table/  # sortable/filterable players grid
+│       ├── components/watchlist/      # shared (global_watchlist) scouting list
 │       └── lib/
 ├── basketball-db/
 │   └── supabase/migrations/  # SQL migrations
@@ -77,11 +81,28 @@ The legacy entry point still works:
 python -m basketball_scraper.main   # reads CIRCUIT/SEASON/AGE_DIVISION from .env
 ```
 
-Backfill rankings from 247Sports / On3 / Passport:
+Backfill bio + recruiting ranks (height, grad year, high school, hometown,
+`star_rating`, `national_rank`, `state_rank`). Each source patches null columns
+only, so they compose without clobbering each other:
 
 ```bash
-python enrich_players.py
+# On3 (live name search) and Passport (3SSB players with a passport_id)
+python enrich_players.py --source on3
+python enrich_players.py --source passport
+
+# 247Sports is two-step: extract profiles to a JSONL cache, then patch the DB
+python -m basketball_scraper.sources.sports247 extract --ranking-url <url> --limit 200
+python enrich_players.py --source 247
+
+# PrepHoops bulk-joins the public player DB
+python scripts/enrich_prephoops.py
+
+# Maintenance: drop placeholder/single-char player names left by scrapers
+python enrich_players.py --clean-bad
 ```
+
+See [`scraper/docs/sources.md`](scraper/docs/sources.md) for what each source
+provides.
 
 ## Dashboard setup
 
@@ -110,18 +131,18 @@ npm run dev   # http://localhost:3000
 
 **Scraper → GitHub Actions**
 
-The workflow at `.github/workflows/scraper.yml` runs every Monday at 6am UTC. Add these secrets to your GitHub repo (Settings → Secrets → Actions):
+The workflow at `.github/workflows/scraper.yml` runs every Monday at 6am UTC and scrapes a **single** circuit per run (the scheduled run defaults to `uaa`). The job opts into the **Production** environment, so add these secrets there (Settings → Environments → Production → Environment secrets), not as repo-level Actions secrets — repo-level secrets resolve to `""` and the run silently writes nothing:
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_KEY`
 
-You can also trigger it manually from the Actions tab with a specific circuit/season/division.
+You can also trigger it manually from the Actions tab with a specific circuit/season/division. Enrichment (`enrich_players.py`, `enrich_prephoops.py`) is not part of this workflow — run it separately.
 
 ## Database
 
 Migrations live in `basketball-db/supabase/migrations/`. Apply them in order via the Supabase dashboard SQL editor or `supabase db push`.
 
-Key tables: `circuits`, `teams`, `players`, `player_season_stats`, `events`, `games`, `box_scores`, `source_snapshots`, `source_aliases`.
+Key tables: `circuits`, `teams`, `players`, `team_rosters`, `player_season_stats`, `events`, `games`, `box_scores`, `source_aliases`, `source_snapshots`, `global_watchlist` (+ `global_watchlist_status_options`).
 
 ## Adding a new circuit
 

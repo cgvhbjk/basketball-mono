@@ -27,7 +27,15 @@ Optional (override only when the source has the data):
     async def list_games(self, event_source_id: str) -> list[Game]: ...
     async def get_game(self, game_source_id: str) -> Game | None: ...
     async def get_box_score(self, game_source_id: str) -> list[BoxScore]: ...
+    async def get_player_box_scores(self, player_source_id: str) -> list[BoxScore]: ...
 ```
+
+The orchestrator's schedule pass only calls `list_events` → `list_games` →
+`get_player_box_scores`. Note that box scores are pulled **per player**, not per
+game: `get_player_box_scores` is the hook `main.py` uses. (Cerebro caches each
+player's games during the stats pass, so this costs no extra network calls.)
+`get_event` / `get_game` / `get_box_score` are convenience hooks for one-off
+lookups and aren't on the main ingest path — override them only if you need them.
 
 Then register it in two places:
 
@@ -88,12 +96,22 @@ rows = parse_stats_page(html, season=2026, age_division="17U")
   the next team. The failing team won't be added to the checkpoint, so the
   next run picks it up.
 
-## Configuration-gated circuits
+## Configuration & env vars
 
-For circuits whose source IDs aren't safe to hardcode (because the wrong
-ID would silently scrape the wrong event), require them via env vars and
-raise `RuntimeError` until set. The EYBL and EYCL adapters follow this
-pattern — see `circuits/eybl.py` and `circuits/eycl.py`.
+**No circuit currently requires per-circuit env vars.** The only secrets are
+the global `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. EYBL/EYCL used to be gated
+on a hardcoded Pointstreak league/season id; since the Cerebro swap they
+resolve their league UUID at runtime from `LeaguesList`, so there's nothing to
+configure (`circuits/eybl.py` and `circuits/eycl.py` are now one-line
+subclasses that just set `_LEAGUE_NAME_PREFIX`). The single optional knob is
+`CEREBRO_OVERALL_ID` (the umbrella id, default `260104`) — override it only if
+Cerebro re-homes the EYBL/EYCL umbrella.
+
+If you add a circuit whose source IDs *aren't* safe to hardcode (a wrong id
+would silently scrape the wrong event), prefer to discover them at runtime from
+a list endpoint the way Cerebro does. If that's impossible, require them via
+env vars and raise `RuntimeError` until set rather than shipping a guessed
+default.
 
 ## Tests
 
