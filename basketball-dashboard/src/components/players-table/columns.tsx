@@ -374,8 +374,9 @@ export function createColumns(per40: boolean): ColumnDef<PlayerStatsRow>[] {
       id: "eff",
       accessorFn: (row) => {
         if (row.ppg === null) return undefined;
-        // No scraper populates `oreb` today, so omit it from the formula rather
-        // than silently treating null as zero and pretending oreb is in the mix.
+        // Simple efficiency rating: PTS + REB + AST + STL + BLK − TO. Rebounds use
+        // the per-game total (rpg), which already includes offensive boards, so
+        // there is no separate `oreb` term (adding one would double-count).
         return (
           (row.ppg ?? 0) +
           (row.rpg ?? 0) +
