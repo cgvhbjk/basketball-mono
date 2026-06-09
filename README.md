@@ -1,5 +1,7 @@
 # basketball-mono
 
+**Live dashboard:** https://basketball-mono.vercel.app
+
 Boys grassroots basketball stats scraper + dashboard. Scrapes player/team stats from Nike EYBL, Nike EYCL (boys), Adidas 3SSB, Adidas Gold, UAA, and UAA Rise. Hoop Group and Made Hoops adapters are scaffolded but not implemented. Stores everything in Supabase and displays it in a Next.js dashboard.
 
 > **Boys-only.** The men's pipeline does not ingest girls circuits. See `scraper/basketball_scraper/circuits/eycl.py` for why the EYCL adapter is configuration-gated.
@@ -103,7 +105,7 @@ npm run dev   # http://localhost:3000
 
 ## Deployment
 
-**Dashboard → Vercel**
+**Dashboard → Vercel** — live at https://basketball-mono.vercel.app
 
 1. Import the repo in Vercel, set root directory to `basketball-dashboard`
 2. Add environment variables: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
