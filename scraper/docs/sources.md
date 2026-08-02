@@ -112,11 +112,45 @@ the full calendar.
     `PlaywrightFetcher` and inspect captured XHRs in the log.
 - **Status**: adapter is scaffolded; raises `NotImplementedError`.
 
-## the-passport.com — **closed**
+## the-passport.com — **profiles only, no stats JSON**
 
-- Public marketing root; no public API surface discoverable.
+- Public marketing root; no public stats API surface discoverable.
 - Used downstream by 3SSB (`teamSlug` / `playerNumber` map to passport
-  player profile pages), but profile pages don't expose stats JSON.
+  player profile pages). Profile pages don't expose stats JSON, but they
+  *do* carry bio (height / position / high school / hometown), so Passport
+  is wired as an **enricher** (see below), not a stats circuit.
+
+## Enrichment sources (bio + recruiting ranks, not stats circuits)
+
+These don't ingest games/stats — they backfill null player fields
+(height, grad_year, high_school, hometown) and recruiting ranks
+(`star_rating`, `national_rank`, `state_rank`) after the circuits run. All
+match on `lower("first last")` and patch null columns only, so a value set by
+one enricher is never clobbered by another. Driven by `enrich_players.py`
+(`--source 247|on3|passport`) plus `scripts/enrich_prephoops.py`.
+
+- **247Sports** — two-step. First `extract` writes player profiles to a JSONL
+  cache (robots-gated, on-disk cache, rate-limited):
+
+  ```bash
+  python -m basketball_scraper.sources.sports247 extract \
+      --ranking-url <247-ranking-list-url> --limit 200
+  ```
+
+  Then patch the DB from the newest extract: `python enrich_players.py
+  --source 247`. The `parse` subcommand reads a saved HTML file offline when a
+  URL is robots-disallowed. Code lives under `sources/sports247/`.
+- **On3** — live name search; fills bio + industry ranks. Checkpointed +
+  rate-limited. `python enrich_players.py --source on3`.
+- **PrepHoops** — bulk-paginates the public `prephoops.com/wp-json/wp/v2/players`
+  database (~176k profiles, no paywall/bot wall), builds a local name index,
+  and joins on it. NULL-only patches, grad-year disambiguation for same-name
+  collisions. `python scripts/enrich_prephoops.py [--dry-run] [--max-pages N]`.
+- **Passport** — fetches `the-passport.com` profiles for 3SSB players that have
+  a `passport_id`. `python enrich_players.py --source passport`.
+
+`enrich_players.py --clean-bad` is a separate maintenance pass that deletes
+players with placeholder/single-char names (scraper artifacts).
 
 ---
 
